@@ -101,6 +101,31 @@ You paste the live chapter URL either way. Headless needs a one-time setup:
 ~/EasyScanlate/.venv/bin/python -m playwright install chromium
 ```
 
+## Windows build (.exe via GitHub Actions)
+
+The Windows **core cleaner** build (download → clean → stitch; no Khmer
+translation, no headless browser) is produced in the cloud — no Windows PC needed:
+
+1. Create an empty repo on GitHub (e.g. `manhwaprep`).
+2. Push this project:
+   ```bash
+   cd ~/ManhwaPrep
+   git remote add origin https://github.com/<you>/manhwaprep.git
+   git push -u origin main
+   ```
+3. GitHub Actions runs `.github/workflows/build-windows.yml` on a Windows runner
+   automatically (or trigger it: **Actions** tab → *Build Windows EXE* → *Run
+   workflow*).
+4. Open the finished run and download the **`ManhwaPrep-windows`** artifact — it
+   contains `ManhwaPrep.exe`.
+
+The `.exe` ships **without models** (keeps it small). On first launch it shows a
+setup window and downloads the core models (RT-DETR + MI-GAN, ~72 MB) into
+`%LOCALAPPDATA%\ManhwaPrep\models`. Output → `%USERPROFILE%\ManhwaPrep\output`.
+
+Not in the Windows core build: Khmer translation (NLLB) and the headless-browser
+downloader (JS/bot-protected sites like nuviatoon) — use the macOS app for those.
+
 ## What each piece does
 
 | File | Job |
