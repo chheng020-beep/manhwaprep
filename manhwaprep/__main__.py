@@ -48,6 +48,11 @@ def main():
         choices=["ko", "en"],
         help="export a numbered transcript (+ overlays) for translating in Claude",
     )
+    ap.add_argument(
+        "--typeset",
+        choices=["ko", "en"],
+        help="clean + build a long canvas + positions for the native Khmer editor",
+    )
     args = ap.parse_args()
 
     if not args.source:
@@ -68,6 +73,7 @@ def main():
         keep_sfx=args.keep_sfx,
         translate=args.translate,
         transcript=args.transcript,
+        typeset=args.typeset,
         on_status=lambda m: print(m, flush=True),
     )
     print(f"\nOutput: {out_dir}")

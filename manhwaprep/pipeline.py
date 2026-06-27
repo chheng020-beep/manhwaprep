@@ -176,6 +176,7 @@ def run(
     keep_sfx: bool = False,
     translate: str | None = None,
     transcript: str | None = None,
+    typeset: str | None = None,
     cleaner: TextCleaner | None = None,
     control=None,
     on_status=None,
@@ -221,6 +222,18 @@ def run(
         raise RuntimeError("No images found in source.")
 
     out_dir = os.path.join(out_root, _safe(name))
+
+    # typeset (optional) — clean + long canvas + positions for the native editor
+    if typeset:
+        from . import typeset_prep
+
+        lp = typeset_prep.prep(
+            out_dir, pages=pages, lang=typeset, inpaint=inpaint,
+            keep_sfx=keep_sfx, control=control,
+            on_status=status, on_progress=on_progress,
+        )
+        status(f"Done — typeset canvas ready: {lp}")
+        return out_dir, [lp]
 
     # 2. transcript (optional) — pull all text out for Claude translation
     if transcript:

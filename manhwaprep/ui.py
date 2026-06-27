@@ -69,6 +69,7 @@ class Worker(QObject):
         keep_sfx: bool,
         translate,
         transcript,
+        typeset,
         control,
     ):
         super().__init__()
@@ -79,6 +80,7 @@ class Worker(QObject):
         self.keep_sfx = keep_sfx
         self.translate = translate
         self.transcript = transcript
+        self.typeset = typeset
         self.control = control
 
     def go(self):
@@ -101,6 +103,7 @@ class Worker(QObject):
                 keep_sfx=self.keep_sfx,
                 translate=self.translate,
                 transcript=self.transcript,
+                typeset=self.typeset,
                 cleaner=cleaner,
                 control=self.control,
                 on_status=self.status.emit,
@@ -259,6 +262,22 @@ class MainWindow(QWidget):
             tx_row.addWidget(self.psd_btn)
             root.addLayout(tx_row)
 
+        # native typesetting: clean + long canvas + open the Khmer editor
+        self.typeset = None
+        if _ocr_available():
+            ts_row = QHBoxLayout()
+            ts_row.addWidget(QLabel("Typeset Khmer (native):"))
+            self.typeset = QComboBox()
+            self.typeset.addItem("Off", None)
+            self.typeset.addItem("from Korean", "ko")
+            self.typeset.addItem("from English", "en")
+            ts_row.addWidget(self.typeset)
+            ts_row.addStretch(1)
+            self.edit_ts_btn = QPushButton("Open typeset editor…")
+            self.edit_ts_btn.clicked.connect(self._open_typeset)
+            ts_row.addWidget(self.edit_ts_btn)
+            root.addLayout(ts_row)
+
         # action buttons: Go / Pause / Stop
         btn_row = QHBoxLayout()
         self.go = QPushButton("Go")
@@ -363,8 +382,10 @@ class MainWindow(QWidget):
             self.keep_sfx.isChecked(),
             self.translate.currentData() if self.translate else None,
             self.transcript.currentData() if self.transcript else None,
+            self.typeset.currentData() if self.typeset else None,
             self._control,
         )
+        self._typeset_active = bool(self.typeset and self.typeset.currentData())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.go)
         self._worker.status.connect(self._append)
@@ -498,10 +519,27 @@ class MainWindow(QWidget):
         self._last_out = out_dir
         self.bar.setValue(self.bar.maximum())
         elapsed = self._finish()
-        self._append(f"✓ {len(outputs)} image(s) ready in {elapsed}.")
         self.activity.setText(f"✓ done in {elapsed}")
         self.activity.setStyleSheet("color:#1a9e4b;font-size:14px;font-weight:bold;")
         self.open_btn.setEnabled(True)
+        # typeset run -> open the native editor on the generated layout
+        if getattr(self, "_typeset_active", False) and outputs:
+            self._append(f"✓ typeset canvas ready in {elapsed} — opening editor…")
+            self._open_typeset(outputs[0])
+        else:
+            self._append(f"✓ {len(outputs)} image(s) ready in {elapsed}.")
+
+    def _open_typeset(self, layout_path=None):
+        from .typeset_editor import TypesetEditor
+
+        if not layout_path or not isinstance(layout_path, str):
+            start = self._last_out or os.path.expanduser("~/ManhwaPrep/output")
+            layout_path, _ = QFileDialog.getOpenFileName(
+                self, "Open typeset layout.json", start, "Layout (layout.json)"
+            )
+        if layout_path and os.path.exists(layout_path):
+            self._ts_editor = TypesetEditor(layout_path)
+            self._ts_editor.show()
 
     def _on_failed(self, err: str):
         self.bar.setRange(0, 1)
