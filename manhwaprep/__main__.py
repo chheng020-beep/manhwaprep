@@ -43,6 +43,11 @@ def main():
         choices=["ko", "en"],
         help="also write a Khmer translation sheet from this source language",
     )
+    ap.add_argument(
+        "--transcript",
+        choices=["ko", "en"],
+        help="export a numbered transcript (+ overlays) for translating in Claude",
+    )
     args = ap.parse_args()
 
     if not args.source:
@@ -62,6 +67,7 @@ def main():
         inpaint="telea" if args.fast else args.inpaint,
         keep_sfx=args.keep_sfx,
         translate=args.translate,
+        transcript=args.transcript,
         on_status=lambda m: print(m, flush=True),
     )
     print(f"\nOutput: {out_dir}")

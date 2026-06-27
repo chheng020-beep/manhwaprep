@@ -138,6 +138,34 @@ def _translate_pages(pages, out_dir, name, lang, ckpt, status, on_progress):
     status(f"Translation sheet → {json_path}")
 
 
+def _transcript_pages(pages, out_dir, name, lang, ckpt, status, on_progress):
+    """OCR every bubble/SFX and write a numbered transcript (+ overlays) for
+    translating in Claude. No machine translation, no cleaning."""
+    import cv2
+
+    from .transcript import Transcriber, write_transcript
+
+    status(f"Transcribing ({lang}) — RT-DETR + OCR…")
+    tr = Transcriber(lang)
+    tpages, n = [], 0
+    for i, p in enumerate(pages, 1):
+        ckpt()
+        img = cv2.imread(p)
+        if img is None:
+            continue
+        items = tr.page(img)
+        for it in items:
+            n += 1
+            it["n"] = n
+        tpages.append({"page": i, "img": img, "items": items})
+        if on_progress:
+            on_progress("transcript", i, len(pages))
+
+    paths = write_transcript(out_dir, name, lang, tpages)
+    status(f"Transcript ({n} lines) → {paths['md']}")
+    return paths
+
+
 def run(
     source: str,
     out_root: str | None = None,
@@ -147,6 +175,7 @@ def run(
     inpaint: str = "migan",
     keep_sfx: bool = False,
     translate: str | None = None,
+    transcript: str | None = None,
     cleaner: TextCleaner | None = None,
     control=None,
     on_status=None,
@@ -193,7 +222,16 @@ def run(
 
     out_dir = os.path.join(out_root, _safe(name))
 
-    # 2. translate (optional) — reads the raw, text-bearing pages
+    # 2. transcript (optional) — pull all text out for Claude translation
+    if transcript:
+        paths = _transcript_pages(
+            pages, out_dir, name, transcript, ckpt, status, on_progress
+        )
+        if not clean:  # transcript-only run: done, nothing to stitch
+            status(f"Done — transcript in {out_dir}")
+            return out_dir, [paths["md"]]
+
+    # 2b. translate (optional) — reads the raw, text-bearing pages
     if translate:
         _translate_pages(
             pages, out_dir, name, translate, ckpt, status, on_progress

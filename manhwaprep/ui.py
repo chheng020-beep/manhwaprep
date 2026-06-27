@@ -43,6 +43,16 @@ def _translation_available() -> bool:
         return False
 
 
+def _ocr_available() -> bool:
+    """Transcript/translate OCR needs rapidocr; the Windows core build omits it."""
+    try:
+        import rapidocr  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 class Worker(QObject):
     status = Signal(str)
     progress = Signal(str, int, int)
@@ -58,6 +68,7 @@ class Worker(QObject):
         inpaint: str,
         keep_sfx: bool,
         translate,
+        transcript,
         control,
     ):
         super().__init__()
@@ -67,6 +78,7 @@ class Worker(QObject):
         self.inpaint = inpaint
         self.keep_sfx = keep_sfx
         self.translate = translate
+        self.transcript = transcript
         self.control = control
 
     def go(self):
@@ -88,6 +100,7 @@ class Worker(QObject):
                 inpaint=self.inpaint,
                 keep_sfx=self.keep_sfx,
                 translate=self.translate,
+                transcript=self.transcript,
                 cleaner=cleaner,
                 control=self.control,
                 on_status=self.status.emit,
@@ -230,6 +243,19 @@ class MainWindow(QWidget):
             tr_row.addWidget(self.edit_btn)
             root.addLayout(tr_row)
 
+        # transcript row — export numbered text for translating in Claude
+        self.transcript = None
+        if _ocr_available():
+            tx_row = QHBoxLayout()
+            tx_row.addWidget(QLabel("Transcript (for Claude):"))
+            self.transcript = QComboBox()
+            self.transcript.addItem("Off", None)
+            self.transcript.addItem("from Korean", "ko")
+            self.transcript.addItem("from English", "en")
+            tx_row.addWidget(self.transcript)
+            tx_row.addStretch(1)
+            root.addLayout(tx_row)
+
         # action buttons: Go / Pause / Stop
         btn_row = QHBoxLayout()
         self.go = QPushButton("Go")
@@ -333,6 +359,7 @@ class MainWindow(QWidget):
             self.quality.currentData(),
             self.keep_sfx.isChecked(),
             self.translate.currentData() if self.translate else None,
+            self.transcript.currentData() if self.transcript else None,
             self._control,
         )
         self._worker.moveToThread(self._thread)
