@@ -254,6 +254,9 @@ class MainWindow(QWidget):
             self.transcript.addItem("from English", "en")
             tx_row.addWidget(self.transcript)
             tx_row.addStretch(1)
+            self.psd_btn = QPushButton("Make Photoshop script…")
+            self.psd_btn.clicked.connect(self._make_psd)
+            tx_row.addWidget(self.psd_btn)
             root.addLayout(tx_row)
 
         # action buttons: Go / Pause / Stop
@@ -390,6 +393,47 @@ class MainWindow(QWidget):
         self._append("Stopping after the current page…")
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
+
+    def _make_psd(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        from . import psgen
+
+        start = self._last_out or os.path.expanduser("~/ManhwaPrep/output")
+        khmer_file, _ = QFileDialog.getOpenFileName(
+            self, "Select Claude's numbered Khmer file", start, "Text (*.txt *.md)"
+        )
+        if not khmer_file:
+            return
+        out_dir = os.path.dirname(khmer_file)
+        if not os.path.exists(os.path.join(out_dir, "transcript.json")):
+            QMessageBox.warning(
+                self, "No transcript.json",
+                "Put the Khmer file in the chapter's output folder — the one "
+                "that has transcript.json (from the Transcript run).",
+            )
+            return
+        try:
+            with open(khmer_file, encoding="utf-8") as f:
+                km = psgen.parse_khmer_list(f.read())
+            if not km:
+                QMessageBox.warning(
+                    self, "No numbered lines",
+                    "Couldn't find any 'N. text' lines in that file.",
+                )
+                return
+            written = psgen.generate(out_dir, km)
+            total = sum(n for _, n in written)
+            jdir = os.path.join(out_dir, "photoshop")
+            QMessageBox.information(
+                self, "Photoshop scripts ready",
+                f"Wrote {len(written)} script(s), {total} text layers.\n\n"
+                f"In Photoshop: open a cleaned page → File ▸ Scripts ▸ Browse ▸ "
+                f"page_001.jsx",
+            )
+            _open_folder(jdir)
+        except Exception as e:
+            QMessageBox.critical(self, "Failed", str(e))
 
     def _open_editor(self):
         from .editor import EditorWindow
