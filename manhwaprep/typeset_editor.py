@@ -100,6 +100,7 @@ class TextBoxItem(QGraphicsItem):
             self.setY(bottom - self.h)
         else:
             self.setY(cy - self.h / 2)  # keep vertical centre
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)  # rotate about centre
         # keep the box on the page when it fits (so growth doesn't run off-canvas)
         sc = self.scene()
         if sc is not None:
@@ -224,6 +225,9 @@ class TextBoxItem(QGraphicsItem):
             "w": self.w, "h": self.h, "font": self.font.family(),
             "size": self.font.pointSizeF(), "fill": self.fill.name(),
             "outline": self.outline.name(), "outline_w": self.outline_w,
+            "bold": self.font.bold(), "italic": self.font.italic(),
+            "underline": self.font.underline(), "align": int(self.align),
+            "rot": self.rotation(),
         }
 
 
@@ -364,6 +368,42 @@ class TypesetEditor(QWidget):
         crow.addWidget(self.outline_btn)
         col.addLayout(crow)
 
+        fmt = QHBoxLayout()
+        self.bold_btn = QPushButton("B")
+        self.bold_btn.setCheckable(True)
+        self.bold_btn.setFixedWidth(32)
+        self.bold_btn.setStyleSheet("font-weight:bold;")
+        self.italic_btn = QPushButton("I")
+        self.italic_btn.setCheckable(True)
+        self.italic_btn.setFixedWidth(32)
+        self.italic_btn.setStyleSheet("font-style:italic;")
+        self.underline_btn = QPushButton("U")
+        self.underline_btn.setCheckable(True)
+        self.underline_btn.setFixedWidth(32)
+        self.underline_btn.setStyleSheet("text-decoration:underline;")
+        self.bold_btn.clicked.connect(self._toggle_bold)
+        self.italic_btn.clicked.connect(self._toggle_italic)
+        self.underline_btn.clicked.connect(self._toggle_underline)
+        fmt.addWidget(self.bold_btn)
+        fmt.addWidget(self.italic_btn)
+        fmt.addWidget(self.underline_btn)
+        self.align_combo = QComboBox()
+        self.align_combo.addItems(["⬅ Left", "⬌ Center", "➡ Right"])
+        self.align_combo.setCurrentIndex(1)
+        self.align_combo.currentIndexChanged.connect(self._align_changed)
+        fmt.addWidget(self.align_combo)
+        col.addLayout(fmt)
+
+        rrow = QHBoxLayout()
+        rrow.addWidget(QLabel("Rotate"))
+        self.rot = QSpinBox()
+        self.rot.setRange(-180, 180)
+        self.rot.setSuffix("°")
+        self.rot.valueChanged.connect(self._rot_changed)
+        rrow.addWidget(self.rot)
+        rrow.addStretch(1)
+        col.addLayout(rrow)
+
         col.addStretch(1)
         self.export_btn = QPushButton("💾 Export this canvas (PNG)")
         self.export_btn.clicked.connect(self._export)
@@ -409,10 +449,19 @@ class TypesetEditor(QWidget):
                 it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
                 it.font = QFont(d["font"])
                 it.font.setPointSizeF(float(d["size"]))
+                it.font.setBold(d.get("bold", False))
+                it.font.setItalic(d.get("italic", False))
+                it.font.setUnderline(d.get("underline", False))
                 it.fill = QColor(d["fill"])
                 it.outline = QColor(d["outline"])
                 it.outline_w = d["outline_w"]
+                if "align" in d:
+                    it.align = Qt.AlignmentFlag(d["align"])
                 self.scene.addItem(it)
+                it._refit()
+                if d.get("rot"):
+                    it.setTransformOriginPoint(it.w / 2, it.h / 2)
+                    it.setRotation(d["rot"])
                 self.items.append(it)
         else:
             for b in seg["items"]:
@@ -445,6 +494,19 @@ class TypesetEditor(QWidget):
         self.ow.blockSignals(True)
         self.ow.setValue(it.outline_w)
         self.ow.blockSignals(False)
+        self.bold_btn.setChecked(it.font.bold())
+        self.italic_btn.setChecked(it.font.italic())
+        self.underline_btn.setChecked(it.font.underline())
+        amap = {int(Qt.AlignLeft): 0, int(Qt.AlignHCenter): 1, int(Qt.AlignRight): 2}
+        ha = int(it.align) & (
+            int(Qt.AlignLeft) | int(Qt.AlignHCenter) | int(Qt.AlignRight)
+        )
+        self.align_combo.blockSignals(True)
+        self.align_combo.setCurrentIndex(amap.get(ha, 1))
+        self.align_combo.blockSignals(False)
+        self.rot.blockSignals(True)
+        self.rot.setValue(int(it.rotation()))
+        self.rot.blockSignals(False)
 
     def _text_changed(self):
         for it in self._selected():
@@ -502,6 +564,35 @@ class TypesetEditor(QWidget):
             it.prepareGeometryChange()
             it.outline_w = v
             it.update()
+
+    def _toggle_bold(self):
+        for it in self._selected():
+            it.font.setBold(self.bold_btn.isChecked())
+            it._refit()
+            it.update()
+
+    def _toggle_italic(self):
+        for it in self._selected():
+            it.font.setItalic(self.italic_btn.isChecked())
+            it._refit()
+            it.update()
+
+    def _toggle_underline(self):
+        for it in self._selected():
+            it.font.setUnderline(self.underline_btn.isChecked())
+            it.update()
+
+    def _align_changed(self, i):
+        a = [Qt.AlignLeft, Qt.AlignHCenter, Qt.AlignRight][i] | Qt.AlignVCenter
+        for it in self._selected():
+            it.align = a
+            it._refit()
+            it.update()
+
+    def _rot_changed(self, v):
+        for it in self._selected():
+            it.setTransformOriginPoint(it.w / 2, it.h / 2)
+            it.setRotation(v)
 
     def _pick_fill(self):
         c = QColorDialog.getColor(QColor(0, 0, 0), self, "Text colour")
