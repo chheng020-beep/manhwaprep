@@ -462,70 +462,53 @@ def _open_folder(path: str):
         subprocess.run(["xdg-open", path])
 
 
-class _DownloadWorker(QObject):
-    progress = Signal(str, int, int)
-    status = Signal(str)
-    done = Signal(bool, str)
-
-    def go(self):
-        try:
-            from .setup_models import ensure_core_models
-
-            ensure_core_models(
-                on_progress=lambda n, d, t: self.progress.emit(n, d, t),
-                on_status=self.status.emit,
-            )
-            self.done.emit(True, "")
-        except Exception as e:
-            self.done.emit(False, str(e))
-
-
 def _ensure_models_or_quit(app) -> bool:
-    """If core models are missing, download them with a progress dialog."""
-    from .setup_models import missing_core_models
+    """Download missing core models on the MAIN thread (no QThread).
 
-    if not missing_core_models():
+    Updating a widget from a background thread is a common cause of hard
+    crashes in packaged apps, so we download here and keep the dialog alive
+    with processEvents() between chunks instead.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    from .setup_models import download_model, missing_core_models
+
+    missing = missing_core_models()
+    if not missing:
         return True
 
-    dlg = QProgressDialog("Preparing models…", None, 0, 100)
+    dlg = QProgressDialog("Preparing models (first run)…", None, 0, 100)
     dlg.setWindowTitle("ManhwaPrep — first-time setup")
     dlg.setCancelButton(None)
-    dlg.setMinimumWidth(420)
+    dlg.setMinimumWidth(440)
     dlg.setAutoClose(False)
+    dlg.setAutoReset(False)
     dlg.setValue(0)
+    dlg.show()
+    app.processEvents()
 
-    thread = QThread()
-    worker = _DownloadWorker()
-    worker.moveToThread(thread)
-    result = {"ok": False, "err": ""}
+    count = len(missing)
+    try:
+        for i, name in enumerate(missing):
+            def on_prog(n, d, t, i=i):
+                overall = int(((i + d / max(t, 1)) / count) * 100)
+                dlg.setLabelText(f"Downloading {n}\n{d // 1_000_000} / {t // 1_000_000} MB")
+                dlg.setValue(min(99, overall))
+                app.processEvents()
 
-    worker.status.connect(dlg.setLabelText)
-    worker.progress.connect(
-        lambda n, d, t: (dlg.setLabelText(f"Downloading {n} ({d // 1_000_000}/{t // 1_000_000} MB)"),
-                         dlg.setValue(int(d * 100 / t)))
-    )
-
-    def finished(ok, err):
-        result["ok"], result["err"] = ok, err
-        thread.quit()
+            download_model(name, on_progress=on_prog)
+        dlg.setValue(100)
         dlg.close()
-
-    worker.done.connect(finished)
-    thread.started.connect(worker.go)
-    thread.start()
-    dlg.exec()
-    thread.wait()
-
-    if not result["ok"]:
-        from PySide6.QtWidgets import QMessageBox
-
+        return True
+    except Exception as e:
+        dlg.close()
         QMessageBox.critical(
-            None, "Model download failed",
-            f"Could not download the required models:\n\n{result['err']}\n\n"
+            None,
+            "Model download failed",
+            f"Could not download the required models:\n\n{e}\n\n"
             "Check your internet connection and reopen the app.",
         )
         return False
-    return True
 
 
 def main():
