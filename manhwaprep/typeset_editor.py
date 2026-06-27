@@ -69,7 +69,8 @@ class TextBoxItem(QGraphicsItem):
         self.w = float(w)
         self.h = float(h)
         self.font = QFont(KHMER_FONT)
-        self.font.setPointSizeF(max(10.0, h * 0.30))
+        self.max_size = max(10.0, h * 0.30)  # font cap; box drives the actual size
+        self.font.setPointSizeF(self.max_size)
         self.fill = QColor(0, 0, 0)
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
@@ -80,35 +81,36 @@ class TextBoxItem(QGraphicsItem):
         )
         self.setAcceptHoverEvents(True)
         self.setPos(x, y)
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
         self._resize = None
         self._start = None
-        self._refit()
+        self._fit_font()
 
-    def _refit(self, top=None, bottom=None):
-        """Auto-size height to fit the wrapped text, so it never clips."""
-        cy = self.y() + self.h / 2
-        fm = QFontMetricsF(self.font)
+    def _fit_font(self):
+        """Box is fixed; scale the font so the wrapped text fills it without
+        ever spilling outside. Bigger box -> bigger font (more lines)."""
+        text = self.text or " "
         flags = int(Qt.AlignHCenter) | int(Qt.TextWordWrap)
-        r = fm.boundingRect(
-            QRectF(0, 0, max(8.0, self.w), 1e7), flags, self.text or " "
-        )
-        self.prepareGeometryChange()
-        self.h = max(8.0, r.height() + 6)
-        if top is not None:
-            self.setY(top)
-        elif bottom is not None:
-            self.setY(bottom - self.h)
+        f = QFont(self.font)
+
+        def fits(sz):
+            f.setPointSizeF(sz)
+            fm = QFontMetricsF(f)
+            r = fm.boundingRect(QRectF(0, 0, max(8.0, self.w), 1e7), flags, text)
+            return r.height() <= self.h and r.width() <= self.w + 1.5
+
+        lo, hi = 5.0, max(6.0, self.max_size)
+        if fits(hi):
+            best = hi
         else:
-            self.setY(cy - self.h / 2)  # keep vertical centre
-        self.setTransformOriginPoint(self.w / 2, self.h / 2)  # rotate about centre
-        # keep the box on the page when it fits (so growth doesn't run off-canvas)
-        sc = self.scene()
-        if sc is not None:
-            sr = sc.sceneRect()
-            if self.h <= sr.height():
-                self.setY(min(max(self.y(), sr.top()), sr.bottom() - self.h))
-            if self.w <= sr.width():
-                self.setX(min(max(self.x(), sr.left()), sr.right() - self.w))
+            for _ in range(14):
+                mid = (lo + hi) / 2
+                if fits(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            best = lo
+        self.font.setPointSizeF(max(5.0, best))
 
     def boundingRect(self) -> QRectF:
         m = self.outline_w + self.HANDLE
@@ -129,8 +131,10 @@ class TextBoxItem(QGraphicsItem):
         return None
 
     def paint(self, p, opt, widget=None):
-        p.setFont(self.font)
         r = QRectF(0, 0, self.w, self.h)
+        p.save()
+        p.setClipRect(r)  # text can never render outside the box
+        p.setFont(self.font)
         flags = int(self.align) | int(Qt.TextWordWrap)
         ow = self.outline_w
         if ow > 0 and self.text:
@@ -141,6 +145,7 @@ class TextBoxItem(QGraphicsItem):
                         p.drawText(r.translated(dx, dy), flags, self.text)
         p.setPen(self.fill)
         p.drawText(r, flags, self.text)
+        p.restore()
         if self.isSelected():
             pen = QPen(QColor(0, 150, 255))
             pen.setStyle(Qt.DashLine)
@@ -176,32 +181,25 @@ class TextBoxItem(QGraphicsItem):
         d = e.scenePos() - sp0
         dx, dy = d.x(), d.y()
         k = self._resize
-        MIN, MINF = 20.0, 6.0
-
-        if k == "r":  # width only -> reflow, height auto
+        MIN = 24.0
+        self.prepareGeometryChange()
+        # resize the box rectangle; opposite edge/corner stays anchored
+        if k in ("r", "tr", "br"):
             self.w = max(MIN, w0 + dx)
-            self._refit(top=y0)
-        elif k == "l":
+        if k in ("l", "tl", "bl"):
             nw = max(MIN, w0 - dx)
             self.setX(x0 + (w0 - nw))
             self.w = nw
-            self._refit(top=y0)
-        elif k in ("t", "b"):  # vertical drag -> font size, height auto
-            grow = dy if k == "b" else -dy
-            scale = max(0.2, (h0 + grow) / h0) if h0 else 1.0
-            self.font.setPointSizeF(max(MINF, fs0 * scale))
-            self._refit(top=y0 if k == "b" else None,
-                        bottom=(y0 + h0) if k == "t" else None)
-        else:  # corners -> scale font + width together, height auto
-            grow = dx if k in ("br", "tr") else -dx
-            scale = max(0.2, (w0 + grow) / w0) if w0 else 1.0
-            nw = max(MIN, w0 * scale)
-            self.font.setPointSizeF(max(MINF, fs0 * scale))
-            if k in ("bl", "tl"):
-                self.setX(x0 + (w0 - nw))
-            self.w = nw
-            self._refit(top=y0 if k in ("br", "bl") else None,
-                        bottom=(y0 + h0) if k in ("tr", "tl") else None)
+        if k in ("b", "bl", "br"):
+            self.h = max(MIN, h0 + dy)
+        if k in ("t", "tl", "tr"):
+            nh = max(MIN, h0 - dy)
+            self.setY(y0 + (h0 - nh))
+            self.h = nh
+        # raise the cap so dragging bigger lets the font grow to fill
+        self.max_size = max(self.max_size, 400.0)
+        self._fit_font()
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
         self.update()
         e.accept()
 
@@ -332,6 +330,15 @@ class TypesetEditor(QWidget):
         self.paste_btn.clicked.connect(self._paste)
         col.addWidget(self.paste_btn)
 
+        addrow = QHBoxLayout()
+        add_btn = QPushButton("➕ Add box")
+        add_btn.clicked.connect(self._add_box)
+        del_btn = QPushButton("🗑 Delete box")
+        del_btn.clicked.connect(self._delete_box)
+        addrow.addWidget(add_btn)
+        addrow.addWidget(del_btn)
+        col.addLayout(addrow)
+
         col.addWidget(QLabel("Selected text:"))
         self.text_edit = QPlainTextEdit()
         self.text_edit.setFixedHeight(80)
@@ -449,6 +456,7 @@ class TypesetEditor(QWidget):
                 it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
                 it.font = QFont(d["font"])
                 it.font.setPointSizeF(float(d["size"]))
+                it.max_size = max(float(d["size"]), it.max_size)
                 it.font.setBold(d.get("bold", False))
                 it.font.setItalic(d.get("italic", False))
                 it.font.setUnderline(d.get("underline", False))
@@ -458,7 +466,7 @@ class TypesetEditor(QWidget):
                 if "align" in d:
                     it.align = Qt.AlignmentFlag(d["align"])
                 self.scene.addItem(it)
-                it._refit()
+                it._fit_font()
                 if d.get("rot"):
                     it.setTransformOriginPoint(it.w / 2, it.h / 2)
                     it.setRotation(d["rot"])
@@ -511,7 +519,7 @@ class TypesetEditor(QWidget):
     def _text_changed(self):
         for it in self._selected():
             it.text = self.text_edit.toPlainText()
-            it._refit()
+            it._fit_font()
             it.update()
 
     def _font_changed(self, font):
@@ -519,13 +527,29 @@ class TypesetEditor(QWidget):
             nf = QFont(font.family())
             nf.setPointSizeF(it.font.pointSizeF())
             it.font = nf
-            it._refit()
+            it._fit_font()
             it.update()
 
     def _size_changed(self, v):
+        # Set the font size and grow the box (height) so it fits — bigger font
+        # grows the box, never clips.
         for it in self._selected():
-            it.font.setPointSizeF(float(v))
-            it._refit()
+            it.max_size = float(v)
+            f = QFont(it.font)
+            f.setPointSizeF(float(v))
+            fm = QFontMetricsF(f)
+            r = fm.boundingRect(
+                QRectF(0, 0, it.w, 1e7),
+                int(Qt.AlignHCenter) | int(Qt.TextWordWrap), it.text or " ",
+            )
+            need = r.height() + 6
+            if need > it.h:
+                cy = it.y() + it.h / 2
+                it.prepareGeometryChange()
+                it.h = need
+                it.setY(cy - it.h / 2)
+                it.setTransformOriginPoint(it.w / 2, it.h / 2)
+            it._fit_font()
             it.update()
 
     # -- inline (double-click) editing ---------------------------------
@@ -553,7 +577,7 @@ class TypesetEditor(QWidget):
         proxy, it = self._inline_proxy, self._inline_item
         self._inline_proxy, self._inline_item = None, None
         it.text = proxy.widget().toPlainText()
-        it._refit()
+        it._fit_font()
         it.update()
         if proxy.scene():
             proxy.scene().removeItem(proxy)
@@ -565,16 +589,38 @@ class TypesetEditor(QWidget):
             it.outline_w = v
             it.update()
 
+    def _add_box(self):
+        center = self.view.mapToScene(self.view.viewport().rect().center())
+        n = max([it.n for it in self.items], default=0) + 1
+        it = TextBoxItem(n, "text", center.x() - 120, center.y() - 40, 240, 80)
+        it.on_edit = self._start_inline_edit
+        self.scene.addItem(it)
+        self.items.append(it)
+        self.scene.clearSelection()
+        it.setSelected(True)
+
+    def _delete_box(self):
+        for it in list(self._selected()):
+            self.scene.removeItem(it)
+            if it in self.items:
+                self.items.remove(it)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected():
+            self._delete_box()
+        else:
+            super().keyPressEvent(e)
+
     def _toggle_bold(self):
         for it in self._selected():
             it.font.setBold(self.bold_btn.isChecked())
-            it._refit()
+            it._fit_font()
             it.update()
 
     def _toggle_italic(self):
         for it in self._selected():
             it.font.setItalic(self.italic_btn.isChecked())
-            it._refit()
+            it._fit_font()
             it.update()
 
     def _toggle_underline(self):
@@ -586,7 +632,7 @@ class TypesetEditor(QWidget):
         a = [Qt.AlignLeft, Qt.AlignHCenter, Qt.AlignRight][i] | Qt.AlignVCenter
         for it in self._selected():
             it.align = a
-            it._refit()
+            it._fit_font()
             it.update()
 
     def _rot_changed(self, v):
@@ -640,7 +686,7 @@ class TypesetEditor(QWidget):
         for it in self.items:
             if it.n in km:
                 it.text = km[it.n]
-                it._refit()
+                it._fit_font()
                 it.update()
                 filled += 1
         QMessageBox.information(self, "Filled", f"Filled {filled} text boxes.")
