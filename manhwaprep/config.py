@@ -46,18 +46,50 @@ def onnx_providers() -> list[str]:
     return out
 
 
-def make_session(model_path: str, sess_options=None):
-    """Create an ONNX session on the best provider, falling back to CPU."""
-    import onnxruntime as ort
+class _RobustSession:
+    """ONNX session that runs on GPU but auto-falls-back to CPU if a node
+    errors at inference (e.g. LaMa's Fast-Fourier-Convolution layers aren't
+    supported by DirectML). Proxies the rest of the session API.
+    """
 
-    try:
-        return ort.InferenceSession(
-            model_path, sess_options, providers=onnx_providers()
-        )
-    except Exception:
-        return ort.InferenceSession(
-            model_path, sess_options, providers=["CPUExecutionProvider"]
-        )
+    def __init__(self, model_path, sess_options=None, force_cpu=False):
+        import onnxruntime as ort
+
+        object.__setattr__(self, "_path", model_path)
+        object.__setattr__(self, "_opts", sess_options)
+        provs = ["CPUExecutionProvider"] if force_cpu else onnx_providers()
+        try:
+            s = ort.InferenceSession(model_path, sess_options, providers=provs)
+        except Exception:
+            s = ort.InferenceSession(
+                model_path, sess_options, providers=["CPUExecutionProvider"]
+            )
+            force_cpu = True
+        object.__setattr__(self, "_s", s)
+        object.__setattr__(self, "_cpu_only", force_cpu)
+
+    def run(self, output_names, input_feed):
+        try:
+            return self._s.run(output_names, input_feed)
+        except Exception:
+            if self._cpu_only:
+                raise
+            import onnxruntime as ort
+
+            s = ort.InferenceSession(
+                self._path, self._opts, providers=["CPUExecutionProvider"]
+            )
+            object.__setattr__(self, "_s", s)
+            object.__setattr__(self, "_cpu_only", True)
+            return self._s.run(output_names, input_feed)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_s"), name)
+
+
+def make_session(model_path: str, sess_options=None, force_cpu=False):
+    """Create a GPU-preferred session with automatic CPU fallback."""
+    return _RobustSession(model_path, sess_options, force_cpu=force_cpu)
 
 
 def default_output_dir() -> str:
