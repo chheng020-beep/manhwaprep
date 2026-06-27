@@ -1,0 +1,20 @@
+# models download on first run — never commit them
+models/
+*.onnx
+nllb-600m-ct2/
+
+# build + venv + caches
+dist/
+build/
+.venv/
+__pycache__/
+*.pyc
+
+# runtime output + scratch
+output/
+_*.png
+_*.log
+token.txt
+bot.log
+
+.DS_Store

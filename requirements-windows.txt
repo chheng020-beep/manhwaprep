@@ -1,0 +1,9 @@
+# Windows "core cleaner" build dependencies (no translation, no PP-OCR fallback).
+PySide6
+onnxruntime
+opencv-python-headless
+numpy
+pillow
+requests
+beautifulsoup4
+gallery-dl
