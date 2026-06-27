@@ -260,16 +260,16 @@ class TextCleaner:
         if mask.max() == 0:
             return img_bgr, 0
 
+        # Grow the stroke mask a little so anti-aliased text edges are covered
+        # (otherwise neural inpaint leaves a faint ghost). Applies to all engines.
+        mask = cv2.dilate(
+            mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        )
+
         if self._inpainter is not None:
             cleaned = self._inpainter.inpaint(img_bgr, mask)
         else:
-            # Telea: the stroke mask is already tight, so add only a tiny margin
-            # and use a small radius — filling thin strokes from close neighbors
-            # avoids the big blurry smear a fat mask + large radius produces.
-            m = cv2.dilate(
-                mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            )
-            cleaned = cv2.inpaint(img_bgr, m, 2, cv2.INPAINT_TELEA)
+            cleaned = cv2.inpaint(img_bgr, mask, 2, cv2.INPAINT_TELEA)
         return cleaned, n_boxes
 
     def clean_file(self, in_path: str, out_path: str) -> int:

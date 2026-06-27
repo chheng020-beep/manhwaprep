@@ -35,7 +35,13 @@ class MiganInpainter:
     def inpaint(self, img_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if mask.max() == 0:
             return img_bgr
-        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        # Pre-clear the hole with a quick Telea fill so the model doesn't "see"
+        # the text and reproduce a faint ghost of it; MI-GAN then refines.
+        seed = cv2.inpaint(
+            img_bgr, cv2.dilate(mask, np.ones((3, 3), np.uint8)), 2,
+            cv2.INPAINT_TELEA,
+        )
+        rgb = cv2.cvtColor(seed, cv2.COLOR_BGR2RGB)
         keep = 255 - mask  # MI-GAN: hole=0, keep=255
         out = self.sess.run(
             None,
