@@ -18,6 +18,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetricsF,
     QImage,
     QPainter,
     QPen,
@@ -73,6 +74,7 @@ class TextBoxItem(QGraphicsItem):
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
         self.align = Qt.AlignHCenter | Qt.AlignVCenter
+        self.on_edit = None  # set by the editor: callback(item) for inline edit
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
@@ -80,6 +82,32 @@ class TextBoxItem(QGraphicsItem):
         self.setPos(x, y)
         self._resize = None
         self._start = None
+        self._refit()
+
+    def _refit(self, top=None, bottom=None):
+        """Auto-size height to fit the wrapped text, so it never clips."""
+        cy = self.y() + self.h / 2
+        fm = QFontMetricsF(self.font)
+        flags = int(Qt.AlignHCenter) | int(Qt.TextWordWrap)
+        r = fm.boundingRect(
+            QRectF(0, 0, max(8.0, self.w), 1e7), flags, self.text or " "
+        )
+        self.prepareGeometryChange()
+        self.h = max(8.0, r.height() + 6)
+        if top is not None:
+            self.setY(top)
+        elif bottom is not None:
+            self.setY(bottom - self.h)
+        else:
+            self.setY(cy - self.h / 2)  # keep vertical centre
+        # keep the box on the page when it fits (so growth doesn't run off-canvas)
+        sc = self.scene()
+        if sc is not None:
+            sr = sc.sceneRect()
+            if self.h <= sr.height():
+                self.setY(min(max(self.y(), sr.top()), sr.bottom() - self.h))
+            if self.w <= sr.width():
+                self.setX(min(max(self.x(), sr.left()), sr.right() - self.w))
 
     def boundingRect(self) -> QRectF:
         m = self.outline_w + self.HANDLE
@@ -143,46 +171,36 @@ class TextBoxItem(QGraphicsItem):
         if not self._resize:
             super().mouseMoveEvent(e)
             return
-        self.prepareGeometryChange()
         w0, h0, x0, y0, fs0, sp0 = self._start
         d = e.scenePos() - sp0
         dx, dy = d.x(), d.y()
         k = self._resize
-        MIN = 20.0
+        MIN, MINF = 20.0, 6.0
 
-        if k in ("l", "r", "t", "b"):  # sides: resize one axis, reflow
-            if k == "r":
-                self.w = max(MIN, w0 + dx)
-            elif k == "l":
-                nw = max(MIN, w0 - dx)
-                self.setX(x0 + (w0 - nw))
-                self.w = nw
-            elif k == "b":
-                self.h = max(MIN, h0 + dy)
-            elif k == "t":
-                nh = max(MIN, h0 - dy)
-                self.setY(y0 + (h0 - nh))
-                self.h = nh
-        else:  # corners: scale text + box proportionally
-            if k in ("br", "tr"):
-                nh = h0 + dy if k == "br" else h0 - dy
-            else:  # bl, tl
-                nh = h0 + dy if k == "bl" else h0 - dy
-            nh = max(MIN, nh)
-            scale = nh / h0 if h0 else 1.0
+        if k == "r":  # width only -> reflow, height auto
+            self.w = max(MIN, w0 + dx)
+            self._refit(top=y0)
+        elif k == "l":
+            nw = max(MIN, w0 - dx)
+            self.setX(x0 + (w0 - nw))
+            self.w = nw
+            self._refit(top=y0)
+        elif k in ("t", "b"):  # vertical drag -> font size, height auto
+            grow = dy if k == "b" else -dy
+            scale = max(0.2, (h0 + grow) / h0) if h0 else 1.0
+            self.font.setPointSizeF(max(MINF, fs0 * scale))
+            self._refit(top=y0 if k == "b" else None,
+                        bottom=(y0 + h0) if k == "t" else None)
+        else:  # corners -> scale font + width together, height auto
+            grow = dx if k in ("br", "tr") else -dx
+            scale = max(0.2, (w0 + grow) / w0) if w0 else 1.0
             nw = max(MIN, w0 * scale)
-            # anchor the opposite corner
-            if k == "br":
-                pass
-            elif k == "tr":
-                self.setY(y0 + (h0 - nh))
-            elif k == "bl":
+            self.font.setPointSizeF(max(MINF, fs0 * scale))
+            if k in ("bl", "tl"):
                 self.setX(x0 + (w0 - nw))
-            elif k == "tl":
-                self.setX(x0 + (w0 - nw))
-                self.setY(y0 + (h0 - nh))
-            self.w, self.h = nw, nh
-            self.font.setPointSizeF(max(6.0, fs0 * scale))
+            self.w = nw
+            self._refit(top=y0 if k in ("br", "bl") else None,
+                        bottom=(y0 + h0) if k in ("tr", "tl") else None)
         self.update()
         e.accept()
 
@@ -192,6 +210,13 @@ class TextBoxItem(QGraphicsItem):
             e.accept()
         else:
             super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if self.on_edit:
+            self.on_edit(self)
+            e.accept()
+        else:
+            super().mouseDoubleClickEvent(e)
 
     def to_dict(self):
         return {
@@ -216,6 +241,24 @@ class _CanvasView(QGraphicsView):
             e.accept()
         else:
             super().wheelEvent(e)
+
+
+class _InlineEdit(QPlainTextEdit):
+    """Temporary on-canvas editor; commits on focus-out or Esc."""
+
+    def __init__(self, on_done):
+        super().__init__()
+        self._on_done = on_done
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self._on_done()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self._on_done()
+            return
+        super().keyPressEvent(e)
 
 
 class PasteDialog(QDialog):
@@ -246,6 +289,8 @@ class TypesetEditor(QWidget):
         self.segments = self.layout.get("segments", [])
         self.seg_idx = 0
         self.items: list[TextBoxItem] = []
+        self._inline_proxy = None
+        self._inline_item = None
 
         self.setWindowTitle(f"Typeset — {self.layout.get('chapter', '')}")
         self.resize(1200, 860)
@@ -375,6 +420,8 @@ class TypesetEditor(QWidget):
                 it = TextBoxItem(b["n"], b["src"], x, y, w, h)
                 self.scene.addItem(it)
                 self.items.append(it)
+        for it in self.items:
+            it.on_edit = self._start_inline_edit
         self.seg_lbl.setText(f"Canvas {idx + 1}/{len(self.segments)}")
         self.prev.setEnabled(idx > 0)
         self.next.setEnabled(idx < len(self.segments) - 1)
@@ -402,6 +449,7 @@ class TypesetEditor(QWidget):
     def _text_changed(self):
         for it in self._selected():
             it.text = self.text_edit.toPlainText()
+            it._refit()
             it.update()
 
     def _font_changed(self, font):
@@ -409,12 +457,45 @@ class TypesetEditor(QWidget):
             nf = QFont(font.family())
             nf.setPointSizeF(it.font.pointSizeF())
             it.font = nf
+            it._refit()
             it.update()
 
     def _size_changed(self, v):
         for it in self._selected():
             it.font.setPointSizeF(float(v))
+            it._refit()
             it.update()
+
+    # -- inline (double-click) editing ---------------------------------
+    def _start_inline_edit(self, item):
+        self._commit_inline()
+        te = _InlineEdit(self._commit_inline)
+        te.setPlainText(item.text)
+        f = QFont(item.font)
+        te.setFont(f)
+        te.setStyleSheet(
+            "background: rgba(255,255,255,235); border:1px solid #2d7ff9;"
+        )
+        proxy = self.scene.addWidget(te)
+        proxy.setZValue(1000)
+        proxy.setPos(item.x(), item.y())
+        te.setFixedSize(int(max(80, item.w)), int(max(48, item.h)))
+        self._inline_proxy = proxy
+        self._inline_item = item
+        te.setFocus()
+        te.selectAll()
+
+    def _commit_inline(self):
+        if not self._inline_proxy:
+            return
+        proxy, it = self._inline_proxy, self._inline_item
+        self._inline_proxy, self._inline_item = None, None
+        it.text = proxy.widget().toPlainText()
+        it._refit()
+        it.update()
+        if proxy.scene():
+            proxy.scene().removeItem(proxy)
+        self._sync_panel()
 
     def _ow_changed(self, v):
         for it in self._selected():
@@ -468,6 +549,7 @@ class TypesetEditor(QWidget):
         for it in self.items:
             if it.n in km:
                 it.text = km[it.n]
+                it._refit()
                 it.update()
                 filled += 1
         QMessageBox.information(self, "Filled", f"Filled {filled} text boxes.")
