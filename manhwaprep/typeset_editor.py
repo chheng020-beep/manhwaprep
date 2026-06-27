@@ -86,31 +86,27 @@ class TextBoxItem(QGraphicsItem):
         self._start = None
         self._fit_font()
 
-    def _fit_font(self):
-        """Box is fixed; scale the font so the wrapped text fills it without
-        ever spilling outside. Bigger box -> bigger font (more lines)."""
-        text = self.text or " "
+    def _fit_font(self, top=None, bottom=None, min_h=None):
+        """Auto-size the HEIGHT to fit the wrapped text at the current (fixed)
+        font, so text never spills out. Font is only changed by corner-drag /
+        the size box. `min_h` lets a side-drag make the frame taller than text."""
+        cy = self.y() + self.h / 2
+        fm = QFontMetricsF(self.font)
         flags = int(Qt.AlignHCenter) | int(Qt.TextWordWrap)
-        f = QFont(self.font)
-
-        def fits(sz):
-            f.setPointSizeF(sz)
-            fm = QFontMetricsF(f)
-            r = fm.boundingRect(QRectF(0, 0, max(8.0, self.w), 1e7), flags, text)
-            return r.height() <= self.h and r.width() <= self.w + 1.5
-
-        lo, hi = 5.0, max(6.0, self.max_size)
-        if fits(hi):
-            best = hi
+        r = fm.boundingRect(
+            QRectF(0, 0, max(8.0, self.w), 1e7), flags, self.text or " "
+        )
+        self.prepareGeometryChange()
+        self.h = max(8.0, r.height() + 6)
+        if min_h:
+            self.h = max(self.h, min_h)
+        if top is not None:
+            self.setY(top)
+        elif bottom is not None:
+            self.setY(bottom - self.h)
         else:
-            for _ in range(14):
-                mid = (lo + hi) / 2
-                if fits(mid):
-                    lo = mid
-                else:
-                    hi = mid
-            best = lo
-        self.font.setPointSizeF(max(5.0, best))
+            self.setY(cy - self.h / 2)  # keep vertical centre
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
 
     def boundingRect(self) -> QRectF:
         m = self.outline_w + self.HANDLE
@@ -182,24 +178,37 @@ class TextBoxItem(QGraphicsItem):
         dx, dy = d.x(), d.y()
         k = self._resize
         MIN = 24.0
-        self.prepareGeometryChange()
-        # resize the box rectangle; opposite edge/corner stays anchored
-        if k in ("r", "tr", "br"):
-            self.w = max(MIN, w0 + dx)
-        if k in ("l", "tl", "bl"):
-            nw = max(MIN, w0 - dx)
-            self.setX(x0 + (w0 - nw))
-            self.w = nw
-        if k in ("b", "bl", "br"):
-            self.h = max(MIN, h0 + dy)
-        if k in ("t", "tl", "tr"):
-            nh = max(MIN, h0 - dy)
-            self.setY(y0 + (h0 - nh))
-            self.h = nh
-        # raise the cap so dragging bigger lets the font grow to fill
-        self.max_size = max(self.max_size, 400.0)
-        self._fit_font()
-        self.setTransformOriginPoint(self.w / 2, self.h / 2)
+
+        if k in ("tl", "tr", "bl", "br"):  # CORNERS -> change size (font)
+            grow = dx if k in ("br", "tr") else -dx
+            scale = max(0.15, (w0 + grow) / w0) if w0 else 1.0
+            self.font.setPointSizeF(max(6.0, fs0 * scale))
+            self.max_size = self.font.pointSizeF()
+            self.prepareGeometryChange()
+            self.w = max(MIN, w0 * scale)
+            if k in ("bl", "tl"):
+                self.setX(x0 + (w0 - self.w))
+            else:
+                self.setX(x0)
+            self._fit_font(top=y0 if k in ("br", "bl") else None,
+                           bottom=(y0 + h0) if k in ("tr", "tl") else None)
+        else:  # SIDES -> change configuration (box shape), font fixed
+            self.font.setPointSizeF(fs0)
+            if k == "r":
+                self.prepareGeometryChange()
+                self.w = max(MIN, w0 + dx)
+                self.setX(x0)
+                self._fit_font(top=y0)
+            elif k == "l":
+                nw = max(MIN, w0 - dx)
+                self.prepareGeometryChange()
+                self.setX(x0 + (w0 - nw))
+                self.w = nw
+                self._fit_font(top=y0)
+            elif k == "b":
+                self._fit_font(top=y0, min_h=max(MIN, h0 + dy))
+            elif k == "t":
+                self._fit_font(bottom=y0 + h0, min_h=max(MIN, h0 - dy))
         self.update()
         e.accept()
 
@@ -531,24 +540,10 @@ class TypesetEditor(QWidget):
             it.update()
 
     def _size_changed(self, v):
-        # Set the font size and grow the box (height) so it fits — bigger font
-        # grows the box, never clips.
+        # Set the font size; the box height auto-grows to fit (never clips).
         for it in self._selected():
             it.max_size = float(v)
-            f = QFont(it.font)
-            f.setPointSizeF(float(v))
-            fm = QFontMetricsF(f)
-            r = fm.boundingRect(
-                QRectF(0, 0, it.w, 1e7),
-                int(Qt.AlignHCenter) | int(Qt.TextWordWrap), it.text or " ",
-            )
-            need = r.height() + 6
-            if need > it.h:
-                cy = it.y() + it.h / 2
-                it.prepareGeometryChange()
-                it.h = need
-                it.setY(cy - it.h / 2)
-                it.setTransformOriginPoint(it.w / 2, it.h / 2)
+            it.font.setPointSizeF(float(v))
             it._fit_font()
             it.update()
 
