@@ -49,13 +49,26 @@ KHMER_FONT = "Khmer Sangam MN"
 
 
 class TextBoxItem(QGraphicsItem):
+    """An editable text frame: move by dragging the body, resize via 8 handles.
+    Corner handles scale the text (font grows/shrinks); side handles change one
+    dimension and the text reflows to fit."""
+
+    HANDLE = 11  # handle square size, in item/scene px
+    _CURSORS = {
+        "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
+        "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
+        "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor,
+        "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor,
+    }
+
     def __init__(self, n, text, x, y, w, h):
         super().__init__()
         self.n = n
         self.text = text
         self.w = float(w)
         self.h = float(h)
-        self.font = QFont(KHMER_FONT, max(10, int(h * 0.30)))
+        self.font = QFont(KHMER_FONT)
+        self.font.setPointSizeF(max(10.0, h * 0.30))
         self.fill = QColor(0, 0, 0)
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
@@ -63,11 +76,28 @@ class TextBoxItem(QGraphicsItem):
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
+        self.setAcceptHoverEvents(True)
         self.setPos(x, y)
+        self._resize = None
+        self._start = None
 
     def boundingRect(self) -> QRectF:
-        m = self.outline_w + 2
+        m = self.outline_w + self.HANDLE
         return QRectF(-m, -m, self.w + 2 * m, self.h + 2 * m)
+
+    def _handles(self) -> dict:
+        w, h, s = self.w, self.h, self.HANDLE
+        pts = {
+            "tl": (0, 0), "tr": (w, 0), "bl": (0, h), "br": (w, h),
+            "t": (w / 2, 0), "b": (w / 2, h), "l": (0, h / 2), "r": (w, h / 2),
+        }
+        return {k: QRectF(px - s / 2, py - s / 2, s, s) for k, (px, py) in pts.items()}
+
+    def _handle_at(self, pos):
+        for k, r in self._handles().items():
+            if r.contains(pos):
+                return k
+        return None
 
     def paint(self, p, opt, widget=None):
         p.setFont(self.font)
@@ -89,15 +119,103 @@ class TextBoxItem(QGraphicsItem):
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawRect(r)
+            p.setBrush(QColor(255, 255, 255))
+            p.setPen(QPen(QColor(0, 150, 255)))
+            for hr in self._handles().values():
+                p.drawRect(hr)
+
+    def hoverMoveEvent(self, e):
+        k = self._handle_at(e.pos()) if self.isSelected() else None
+        self.setCursor(self._CURSORS.get(k, Qt.OpenHandCursor))
+        super().hoverMoveEvent(e)
+
+    def mousePressEvent(self, e):
+        k = self._handle_at(e.pos()) if self.isSelected() else None
+        if k:
+            self._resize = k
+            self._start = (self.w, self.h, self.x(), self.y(),
+                           self.font.pointSizeF(), e.scenePos())
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if not self._resize:
+            super().mouseMoveEvent(e)
+            return
+        self.prepareGeometryChange()
+        w0, h0, x0, y0, fs0, sp0 = self._start
+        d = e.scenePos() - sp0
+        dx, dy = d.x(), d.y()
+        k = self._resize
+        MIN = 20.0
+
+        if k in ("l", "r", "t", "b"):  # sides: resize one axis, reflow
+            if k == "r":
+                self.w = max(MIN, w0 + dx)
+            elif k == "l":
+                nw = max(MIN, w0 - dx)
+                self.setX(x0 + (w0 - nw))
+                self.w = nw
+            elif k == "b":
+                self.h = max(MIN, h0 + dy)
+            elif k == "t":
+                nh = max(MIN, h0 - dy)
+                self.setY(y0 + (h0 - nh))
+                self.h = nh
+        else:  # corners: scale text + box proportionally
+            if k in ("br", "tr"):
+                nh = h0 + dy if k == "br" else h0 - dy
+            else:  # bl, tl
+                nh = h0 + dy if k == "bl" else h0 - dy
+            nh = max(MIN, nh)
+            scale = nh / h0 if h0 else 1.0
+            nw = max(MIN, w0 * scale)
+            # anchor the opposite corner
+            if k == "br":
+                pass
+            elif k == "tr":
+                self.setY(y0 + (h0 - nh))
+            elif k == "bl":
+                self.setX(x0 + (w0 - nw))
+            elif k == "tl":
+                self.setX(x0 + (w0 - nw))
+                self.setY(y0 + (h0 - nh))
+            self.w, self.h = nw, nh
+            self.font.setPointSizeF(max(6.0, fs0 * scale))
+        self.update()
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if self._resize:
+            self._resize = None
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
 
     def to_dict(self):
-        pos = self.pos()
         return {
-            "n": self.n, "text": self.text, "x": pos.x(), "y": pos.y(),
+            "n": self.n, "text": self.text, "x": self.x(), "y": self.y(),
             "w": self.w, "h": self.h, "font": self.font.family(),
-            "size": self.font.pointSize(), "fill": self.fill.name(),
+            "size": self.font.pointSizeF(), "fill": self.fill.name(),
             "outline": self.outline.name(), "outline_w": self.outline_w,
         }
+
+
+class _CanvasView(QGraphicsView):
+    """Graphics view with Ctrl+wheel zoom (plain wheel scrolls)."""
+
+    def __init__(self, scene):
+        super().__init__(scene)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            f = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
+            self.scale(f, f)
+            e.accept()
+        else:
+            super().wheelEvent(e)
 
 
 class PasteDialog(QDialog):
@@ -134,7 +252,7 @@ class TypesetEditor(QWidget):
         root = QHBoxLayout(self)
 
         self.scene = QGraphicsScene()
-        self.view = QGraphicsView(self.scene)
+        self.view = _CanvasView(self.scene)
         self.view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.scene.selectionChanged.connect(self._sync_panel)
         root.addWidget(self.view, 4)
@@ -157,7 +275,11 @@ class TypesetEditor(QWidget):
         nav.addWidget(self.next)
         col.addLayout(nav)
 
-        self.paste_btn = QPushButton("📋 Paste Khmer list…")
+        self.copy_btn = QPushButton("1️⃣ Copy text for Claude")
+        self.copy_btn.clicked.connect(self._copy_for_claude)
+        col.addWidget(self.copy_btn)
+
+        self.paste_btn = QPushButton("2️⃣ Paste Khmer list…")
         self.paste_btn.clicked.connect(self._paste)
         col.addWidget(self.paste_btn)
 
@@ -240,7 +362,8 @@ class TypesetEditor(QWidget):
         if state:
             for d in state:
                 it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
-                it.font = QFont(d["font"], d["size"])
+                it.font = QFont(d["font"])
+                it.font.setPointSizeF(float(d["size"]))
                 it.fill = QColor(d["fill"])
                 it.outline = QColor(d["outline"])
                 it.outline_w = d["outline_w"]
@@ -270,7 +393,7 @@ class TypesetEditor(QWidget):
         self.text_edit.setPlainText(it.text)
         self.text_edit.blockSignals(False)
         self.size.blockSignals(True)
-        self.size.setValue(max(6, it.font.pointSize()))
+        self.size.setValue(max(6, round(it.font.pointSizeF())))
         self.size.blockSignals(False)
         self.ow.blockSignals(True)
         self.ow.setValue(it.outline_w)
@@ -283,12 +406,14 @@ class TypesetEditor(QWidget):
 
     def _font_changed(self, font):
         for it in self._selected():
-            it.font = QFont(font.family(), it.font.pointSize())
+            nf = QFont(font.family())
+            nf.setPointSizeF(it.font.pointSizeF())
+            it.font = nf
             it.update()
 
     def _size_changed(self, v):
         for it in self._selected():
-            it.font = QFont(it.font.family(), v)
+            it.font.setPointSizeF(float(v))
             it.update()
 
     def _ow_changed(self, v):
@@ -310,6 +435,24 @@ class TypesetEditor(QWidget):
             for it in self._selected():
                 it.outline = c
                 it.update()
+
+    def _copy_for_claude(self):
+        lines = []
+        for seg in self.segments:
+            for it in seg["items"]:
+                lines.append((it["n"], f"{it['n']}. [{it['kind']}] {it['src']}"))
+        lines.sort(key=lambda t: t[0])
+        body = "\n".join(s for _, s in lines)
+        text = (
+            "Translate each numbered line below into natural Khmer for a manhwa. "
+            "Keep the numbers and the [bubble]/[sfx] tags, one line each.\n\n" + body
+        )
+        QApplication.clipboard().setText(text)
+        QMessageBox.information(
+            self, "Copied",
+            f"Copied {len(lines)} numbered lines (+ a prompt) to the clipboard.\n\n"
+            "Paste into Claude, then paste the Khmer back with “2️⃣ Paste Khmer list”.",
+        )
 
     def _paste(self):
         from .psgen import parse_khmer_list
