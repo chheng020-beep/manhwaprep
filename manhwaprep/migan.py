@@ -30,9 +30,7 @@ class MiganInpainter:
             raise FileNotFoundError(self.model_path)
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.sess = ort.InferenceSession(
-            self.model_path, opts, providers=["CPUExecutionProvider"]
-        )
+        self.sess = config.make_session(self.model_path, opts)
 
     def inpaint(self, img_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if mask.max() == 0:

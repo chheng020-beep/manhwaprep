@@ -2,17 +2,22 @@
 # Build:  pyinstaller manhwaprep.spec
 # Models are NOT bundled — they download on first run.
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
+
+# Collect onnxruntime fully so the DirectML (GPU) provider DLLs are bundled.
+ort_datas, ort_binaries, ort_hidden = collect_all("onnxruntime")
 
 a = Analysis(
     ["app_entry.py"],
     pathex=["."],
-    binaries=[],
-    datas=[("manhwaprep/assets/icon.png", "manhwaprep/assets")],
+    binaries=ort_binaries,
+    datas=[("manhwaprep/assets/icon.png", "manhwaprep/assets")] + ort_datas,
     hiddenimports=[
         "onnxruntime",
         "PySide6.QtSvg",
-    ],
+    ] + ort_hidden,
     hookspath=[],
     runtime_hooks=[],
     # keep the build lean: translation + OCR-fallback + headless stacks are out

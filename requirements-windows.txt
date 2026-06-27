@@ -1,6 +1,6 @@
 # Windows "core cleaner" build dependencies (no translation, no PP-OCR fallback).
 PySide6
-onnxruntime
+onnxruntime-directml
 opencv-python-headless
 numpy
 pillow

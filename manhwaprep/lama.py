@@ -40,9 +40,7 @@ class LamaInpainter:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = multiprocessing.cpu_count()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.sess = ort.InferenceSession(
-            self.model_path, opts, providers=["CPUExecutionProvider"]
-        )
+        self.sess = config.make_session(self.model_path, opts)
 
     def _regions(self, mask: np.ndarray) -> list[tuple[int, int, int, int]]:
         """Crop boxes (x0,y0,x1,y1) around each merged text cluster."""

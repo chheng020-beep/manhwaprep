@@ -29,6 +29,37 @@ def model_path(name: str) -> str:
     return os.path.join(MODELS_DIR, name)
 
 
+def onnx_providers() -> list[str]:
+    """Prefer GPU (CUDA / DirectML) when available, always fall back to CPU.
+
+    On Windows with onnxruntime-directml this returns DmlExecutionProvider so the
+    GPU is used; on the Mac (CPU-only onnxruntime) it returns just CPU.
+    """
+    try:
+        import onnxruntime as ort
+
+        avail = set(ort.get_available_providers())
+    except Exception:
+        return ["CPUExecutionProvider"]
+    out = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in avail]
+    out.append("CPUExecutionProvider")
+    return out
+
+
+def make_session(model_path: str, sess_options=None):
+    """Create an ONNX session on the best provider, falling back to CPU."""
+    import onnxruntime as ort
+
+    try:
+        return ort.InferenceSession(
+            model_path, sess_options, providers=onnx_providers()
+        )
+    except Exception:
+        return ort.InferenceSession(
+            model_path, sess_options, providers=["CPUExecutionProvider"]
+        )
+
+
 def default_output_dir() -> str:
     if sys.platform == "win32":
         base = os.environ.get("USERPROFILE") or os.path.expanduser("~")
@@ -55,5 +86,10 @@ MODEL_URLS = {
     ),
 }
 
-# The minimum needed for the core cleaner (detection + fast inpaint).
-CORE_MODELS = ["detector_int8.onnx", "migan_pipeline_v2.onnx"]
+# The minimum needed for the core cleaner: detection + MI-GAN (fast) + LaMa
+# (best, GPU-accelerated when available).
+CORE_MODELS = [
+    "detector_int8.onnx",
+    "migan_pipeline_v2.onnx",
+    "lama_fp32.onnx",
+]

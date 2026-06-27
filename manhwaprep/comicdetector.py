@@ -41,9 +41,7 @@ class ComicDetector:
         self.conf = conf
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.sess = ort.InferenceSession(
-            self.model_path, opts, providers=["CPUExecutionProvider"]
-        )
+        self.sess = config.make_session(self.model_path, opts)
 
     @staticmethod
     def _slabs(height: int):

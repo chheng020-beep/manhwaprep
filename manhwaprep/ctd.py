@@ -30,9 +30,7 @@ class ComicTextDetector:
         self.thresh = thresh
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.sess = ort.InferenceSession(
-            self.model_path, opts, providers=["CPUExecutionProvider"]
-        )
+        self.sess = config.make_session(self.model_path, opts)
 
     def mask(self, img_bgr: np.ndarray) -> np.ndarray:
         """Return a binary text mask (uint8 0/255) at the image's own size."""
