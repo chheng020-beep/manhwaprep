@@ -27,6 +27,7 @@ MAX_RATIO = 2.5   # max panel height = 2.5 * width
 IDEAL_RATIO = 1.4
 MIN_RATIO = 0.6
 FORBID_MARGIN = 4  # px of breathing room kept around each text box
+ART_MIN = 0.012   # min fraction of non-text "drawn detail" for a panel to stand alone
 
 
 def _row_cost(gray: np.ndarray) -> np.ndarray:
@@ -107,7 +108,53 @@ def split_panels(
         pos = best
 
     cuts.append(H)
-    return [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
+    slices = [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
+    return _merge_lonely(slices, gray, forbidden, min_h)
+
+
+def _art_score(gray: np.ndarray, y0: int, y1: int, forbidden: np.ndarray) -> float:
+    """Fraction of a slice that is actual drawn artwork — i.e. detailed pixels
+    OUTSIDE the text rows. A lone speech bubble (flat background + text) scores
+    near zero; a panel with scenery/characters scores high."""
+    region = gray[y0:y1]
+    if region.shape[0] < 2:
+        return 0.0
+    gx = cv2.Sobel(region, cv2.CV_32F, 1, 0)
+    gy = cv2.Sobel(region, cv2.CV_32F, 0, 1)
+    detail = (np.abs(gx) + np.abs(gy)) > 30
+    keep = ~forbidden[y0:y1]  # drop text rows so their edges don't read as "art"
+    if keep.sum() == 0:
+        return 0.0
+    return float(detail[keep, :].mean())
+
+
+def _merge_lonely(slices, gray, forbidden, min_h):
+    """Merge any panel that is too short OR is just a text bubble with no real
+    artwork into a neighbour, so every posted image carries some art and the
+    story flows. Merges toward the neighbour that already has more art."""
+    if len(slices) <= 1:
+        return slices
+    changed = True
+    while changed and len(slices) > 1:
+        changed = False
+        scores = [_art_score(gray, a, b, forbidden) for a, b in slices]
+        for i, (a, b) in enumerate(slices):
+            lonely = (b - a) < min_h or scores[i] < ART_MIN
+            if not lonely:
+                continue
+            if i == 0:
+                j = 1
+            elif i == len(slices) - 1:
+                j = i - 1
+            else:
+                j = i - 1 if scores[i - 1] >= scores[i + 1] else i + 1
+            lo = min(slices[i][0], slices[j][0])
+            hi = max(slices[i][1], slices[j][1])
+            k = min(i, j)
+            slices = slices[:k] + [(lo, hi)] + slices[max(i, j) + 1:]
+            changed = True
+            break
+    return slices
 
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
