@@ -885,6 +885,10 @@ class TypesetEditor(QWidget):
         self.export_all_btn = QPushButton("Export ALL canvases")
         self.export_all_btn.clicked.connect(self._export_all)
         eg.addWidget(self.export_all_btn)
+        self.pdf_btn = QPushButton("📄 Save as one PDF")
+        self.pdf_btn.setToolTip("Combine every canvas into a single PDF")
+        self.pdf_btn.clicked.connect(self._export_pdf)
+        eg.addWidget(self.pdf_btn)
         srow = QHBoxLayout()
         srow.addWidget(QLabel("FB split"))
         self.split_mode = QComboBox()
@@ -1721,6 +1725,36 @@ class TypesetEditor(QWidget):
             self._render(seg).save(out)
             done.append(out)
         QMessageBox.information(self, "Exported all", "\n".join(done))
+
+    def _export_pdf(self):
+        """Render every canvas (Khmer + edits baked in) into one multi-page PDF."""
+        try:
+            from PIL import Image
+        except Exception:
+            QMessageBox.warning(self, "PDF", "Pillow is required to save a PDF.")
+            return
+        chapter = self.layout.get("chapter", "") or "chapter"
+        default = os.path.join(self.base, f"{chapter}.pdf")
+        out, _ = QFileDialog.getSaveFileName(self, "Save as PDF", default,
+                                             "PDF (*.pdf)")
+        if not out:
+            return
+        if not out.lower().endswith(".pdf"):
+            out += ".pdf"
+        self._commit_items()
+        cur = self.seg_idx
+        pages = []
+        for i, seg in enumerate(self.segments):
+            self.seg_idx = i
+            self._load_segment(i)
+            bgr = self._qimage_to_bgr(self._render(seg))
+            pages.append(Image.fromarray(np.ascontiguousarray(bgr[:, :, ::-1])))
+        self.seg_idx = cur
+        self._load_segment(cur)
+        if not pages:
+            return
+        pages[0].save(out, "PDF", save_all=True, append_images=pages[1:])
+        QMessageBox.information(self, "PDF saved", out)
 
     # -- Facebook panel split ------------------------------------------
     @staticmethod

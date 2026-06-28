@@ -1,5 +1,23 @@
 [
   {
+    "layout": "/Users/leapheakuoch/ManhwaPrep/output/chapter-2/typeset/layout.json",
+    "chapter": "chapter-2",
+    "thumb": "/Users/leapheakuoch/ManhwaPrep/output/chapter-2/typeset/canvas_001.png",
+    "saved_at": 1782664404.468778
+  },
+  {
+    "layout": "/var/folders/_t/bmypdxpd0z3_djtt18r6v5zc0000gn/T/tmpc3hqy39a/layout.json",
+    "chapter": "My Chapter",
+    "thumb": "/var/folders/_t/bmypdxpd0z3_djtt18r6v5zc0000gn/T/tmpc3hqy39a/canvas_001.png",
+    "saved_at": 1782664294.8096771
+  },
+  {
+    "layout": "/var/folders/_t/bmypdxpd0z3_djtt18r6v5zc0000gn/T/tmps8d4im17/layout.json",
+    "chapter": "My Chapter",
+    "thumb": "/var/folders/_t/bmypdxpd0z3_djtt18r6v5zc0000gn/T/tmps8d4im17/canvas_001.png",
+    "saved_at": 1782663850.164899
+  },
+  {
     "layout": "/var/folders/_t/bmypdxpd0z3_djtt18r6v5zc0000gn/T/tmp_va69g7n/layout.json",
     "chapter": "",
     "thumb": "/var/folders/_t/bmypdxpd0z3_djtt18r6v5zc0000gn/T/tmp_va69g7n/canvas_001.png",
