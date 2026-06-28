@@ -309,7 +309,15 @@ class _InlineEdit(QTextEdit):
         self._on_done()
 
     def keyPressEvent(self, e):
+        # Enter commits the edit (it must NOT add a blank line — that extra line
+        # makes the box shrink the font to fit). Shift+Enter inserts a real line
+        # break; Esc also commits.
         if e.key() == Qt.Key_Escape:
+            self._on_done()
+            return
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (
+            e.modifiers() & Qt.ShiftModifier
+        ):
             self._on_done()
             return
         super().keyPressEvent(e)
