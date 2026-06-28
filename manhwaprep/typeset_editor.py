@@ -21,6 +21,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontDatabase,
     QFontMetricsF,
     QIcon,
     QImage,
@@ -61,11 +62,37 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-KHMER_FONT = "Khmer Sangam MN"
 # Khmer has no spaces between words, so word-wrap alone leaves it as one huge
 # unbreakable line. WrapAtWordBoundaryOrAnywhere wraps English at spaces and
 # Khmer wherever it must, so both fit and measure correctly.
 WRAP_FLAGS = int(Qt.TextWordWrap) | int(Qt.TextWrapAnywhere)
+
+_KHMER_FONT = None
+
+
+def khmer_font() -> str:
+    """Resolve a Khmer-capable font family, registering the bundled fonts so the
+    editor renders Khmer everywhere — macOS keeps 'Khmer Sangam MN', Windows/Linux
+    fall back to the bundled Hanuman (or a system Khmer font). Memoised; must be
+    called after a QApplication exists."""
+    global _KHMER_FONT
+    if _KHMER_FONT is not None:
+        return _KHMER_FONT
+    registered = []
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
+    if os.path.isdir(base):
+        for fn in sorted(os.listdir(base)):
+            if fn.lower().endswith((".ttf", ".otf")):
+                fid = QFontDatabase.addApplicationFont(os.path.join(base, fn))
+                registered += QFontDatabase.applicationFontFamilies(fid)
+    fams = set(QFontDatabase.families())
+    for cand in ("Khmer Sangam MN", "Hanuman", *registered,
+                 "Khmer OS", "Leelawadee UI", "Khmer UI", "Noto Sans Khmer"):
+        if cand in fams:
+            _KHMER_FONT = cand
+            return _KHMER_FONT
+    _KHMER_FONT = registered[0] if registered else "Sans Serif"
+    return _KHMER_FONT
 
 
 class TextBoxItem(QGraphicsItem):
@@ -92,7 +119,7 @@ class TextBoxItem(QGraphicsItem):
         self.text = text
         self.w = float(w)
         self.h = float(h)
-        self.font = QFont(KHMER_FONT)
+        self.font = QFont(khmer_font())
         # The BOX is the boss: the font auto-fits inside w×h, never larger than
         # this cap. A high default lets the text fill the box; the Size spin box
         # (or a corner drag) lowers/raises the cap.
@@ -687,11 +714,11 @@ class TypesetEditor(QWidget):
         tg = QVBoxLayout(self.text_group)
         self.text_edit = QPlainTextEdit()
         self.text_edit.setFixedHeight(70)
-        self.text_edit.setFont(QFont(KHMER_FONT, 15))
+        self.text_edit.setFont(QFont(khmer_font(), 15))
         self.text_edit.textChanged.connect(self._text_changed)
         tg.addWidget(self.text_edit)
         self.fontbox = QFontComboBox()
-        self.fontbox.setCurrentFont(QFont(KHMER_FONT))
+        self.fontbox.setCurrentFont(QFont(khmer_font()))
         self.fontbox.currentFontChanged.connect(self._font_changed)
         tg.addWidget(self.fontbox)
         srow = QHBoxLayout()

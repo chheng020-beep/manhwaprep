@@ -109,8 +109,9 @@ You paste the live chapter URL either way. Headless needs a one-time setup:
 
 ## Windows build (.exe via GitHub Actions)
 
-The Windows **core cleaner** build (download → clean → stitch; no transcript/
-typeset OCR, no headless browser) is produced in the cloud — no Windows PC needed:
+The Windows build (download → clean → stitch **plus** the full Khmer transcript/
+typeset/paint editor; no headless browser) is produced in the cloud — no Windows
+PC needed:
 
 1. Create an empty repo on GitHub (e.g. `manhwaprep`).
 2. Push this project:
@@ -125,13 +126,14 @@ typeset OCR, no headless browser) is produced in the cloud — no Windows PC nee
 4. Open the finished run and download the **`ManhwaPrep-windows`** artifact — it
    contains `ManhwaPrep.exe`.
 
-The `.exe` ships **without models** (keeps it small). On first launch it shows a
-setup window and downloads the core models (RT-DETR + MI-GAN, ~72 MB) into
-`%LOCALAPPDATA%\ManhwaPrep\models`. Output → `%USERPROFILE%\ManhwaPrep\output`.
+The big ONNX detection/inpaint models still download on first launch (RT-DETR +
+MI-GAN, ~72 MB) into `%LOCALAPPDATA%\ManhwaPrep\models`. The small PP-OCR models
+(~33 MB) and the Khmer fonts (Hanuman / Suwannaphum / Koulen) are **vendored and
+bundled** into the `.exe`, so the typeset editor renders Khmer and runs the
+transcript OCR offline. Output → `%USERPROFILE%\ManhwaPrep\output`.
 
-Not in the Windows core build: the transcript/typeset OCR stack and the
-headless-browser downloader (JS/bot-protected sites like nuviatoon) — use the
-macOS app for those.
+Not in the Windows build: the headless-browser downloader (JS/bot-protected
+sites like nuviatoon) — use the macOS app for those.
 
 ## What each piece does
 

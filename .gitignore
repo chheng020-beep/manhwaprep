@@ -2,6 +2,8 @@
 models/
 *.onnx
 nllb-600m-ct2/
+# …except the small PP-OCR models we vendor for the Windows typeset build
+!manhwaprep/ocr_models/model/*.onnx
 
 # build + venv + caches
 dist/

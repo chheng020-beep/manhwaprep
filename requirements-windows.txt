@@ -1,9 +1,21 @@
-# Windows "core cleaner" build dependencies (no translation, no PP-OCR fallback).
+# Windows .exe build dependencies (core cleaner + Khmer typeset with OCR).
 PySide6
 onnxruntime-directml
-opencv-python-headless
+# rapidocr needs the full opencv-python (not headless); use a single cv2 to
+# avoid a duplicate-install conflict inside the bundle.
+opencv-python
 numpy
 pillow
 requests
 beautifulsoup4
 gallery-dl
+# typeset transcript OCR (PP-OCR via rapidocr) + its native geometry deps
+rapidocr==3.6.0
+shapely
+pyclipper
+pyyaml
+omegaconf
+antlr4-python3-runtime
+colorlog
+tqdm
+six

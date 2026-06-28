@@ -1,29 +1,55 @@
-# PyInstaller spec for the ManhwaPrep core cleaner (Windows .exe).
+# PyInstaller spec for the ManhwaPrep Windows .exe (cleaner + Khmer typeset).
 # Build:  pyinstaller manhwaprep.spec
-# Models are NOT bundled — they download on first run.
+# ONNX detection/inpaint models download on first run; the small PP-OCR models
+# and the Khmer fonts are vendored and bundled so typeset works offline.
 
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
-# Collect onnxruntime fully so the DirectML (GPU) provider DLLs are bundled.
-ort_datas, ort_binaries, ort_hidden = collect_all("onnxruntime")
+datas, binaries, hidden = [], [], []
+# Collect onnxruntime (DirectML GPU DLLs) and the rapidocr stack — including its
+# native geometry deps and the config/grammar packages it loads dynamically — so
+# the typeset transcript OCR runs inside the .exe.
+for pkg in ("onnxruntime", "rapidocr", "shapely", "pyclipper", "omegaconf"):
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d
+        binaries += b
+        hidden += h
+    except Exception:
+        pass
 
 a = Analysis(
     ["app_entry.py"],
     pathex=["."],
-    binaries=ort_binaries,
-    datas=[("manhwaprep/assets/icon.png", "manhwaprep/assets")] + ort_datas,
+    binaries=binaries,
+    datas=[
+        ("manhwaprep/assets/icon.png", "manhwaprep/assets"),
+        ("manhwaprep/assets/fonts", "manhwaprep/assets/fonts"),
+        ("manhwaprep/ocr_models", "manhwaprep/ocr_models"),
+    ] + datas,
     hiddenimports=[
         "onnxruntime",
         "PySide6.QtSvg",
-    ] + ort_hidden,
+        # lazily imported by the GUI — name them so PyInstaller bundles them
+        "manhwaprep.typeset_editor",
+        "manhwaprep.typeset_prep",
+        "manhwaprep.transcript",
+        "manhwaprep.comicdetector",
+        "manhwaprep.ocr",
+        # rapidocr's runtime-imported helpers PyInstaller can miss
+        "colorlog",
+        "tqdm",
+        "six",
+        "antlr4",
+    ] + hidden,
     hookspath=[],
     runtime_hooks=[],
-    # keep the build lean: OCR + headless + unused ML stacks are out
+    # keep the build lean: translation + headless + unused ML stacks are out
     excludes=[
-        "rapidocr", "ctranslate2", "transformers", "torch", "sentencepiece",
-        "playwright", "tkinter", "matplotlib", "scipy", "pandas", "PyQt5",
+        "ctranslate2", "transformers", "torch", "sentencepiece",
+        "playwright", "tkinter", "matplotlib", "pandas", "PyQt5",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

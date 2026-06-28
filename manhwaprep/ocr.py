@@ -20,7 +20,18 @@ import cv2
 import numpy as np
 from rapidocr import EngineType, RapidOCR
 
-OCR_DIR = os.path.expanduser("~/EasyScanlate/OCR")
+
+def _find_ocr_dir() -> str:
+    """Locate the PP-OCR models: vendored in the package (and bundled into the
+    .exe at the same relative path), falling back to the EasyScanlate dev copy."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    local = os.path.join(here, "ocr_models")
+    if os.path.isdir(os.path.join(local, "model")):
+        return local
+    return os.path.expanduser("~/EasyScanlate/OCR")
+
+
+OCR_DIR = _find_ocr_dir()
 DET_MODEL = os.path.join(OCR_DIR, "model", "ch_PP-OCRv5_mobile_det.onnx")
 
 REC_MODELS = {
