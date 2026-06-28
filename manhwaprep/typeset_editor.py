@@ -56,7 +56,8 @@ class TextBoxItem(QGraphicsItem):
     Corner handles scale the text (font grows/shrinks); side handles change one
     dimension and the text reflows to fit."""
 
-    HANDLE = 11  # handle square size, in item/scene px
+    HANDLE = 11  # corner handle square size, in item/scene px
+    EDGE_GRAB = 9.0  # how far from an edge still counts as grabbing that edge
     _CURSORS = {
         "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
         "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
@@ -124,9 +125,24 @@ class TextBoxItem(QGraphicsItem):
         return {k: QRectF(px - s / 2, py - s / 2, s, s) for k, (px, py) in pts.items()}
 
     def _handle_at(self, pos):
-        for k, r in self._handles().items():
-            if r.contains(pos):
+        # Corners first — they scale the font (and need a precise target).
+        hs = self._handles()
+        for k in ("tl", "tr", "bl", "br"):
+            if hs[k].contains(pos):
                 return k
+        # The WHOLE side is grabbable, like Canva — not just a tiny mid-handle.
+        # Drag any point along the left/right edge to reshape (and auto-grow).
+        x, y, w, h, e = pos.x(), pos.y(), self.w, self.h, self.EDGE_GRAB
+        if -e <= y <= h + e:
+            if abs(x) <= e:
+                return "l"
+            if abs(x - w) <= e:
+                return "r"
+        if -e <= x <= w + e:
+            if abs(y) <= e:
+                return "t"
+            if abs(y - h) <= e:
+                return "b"
         return None
 
     def paint(self, p, opt, widget=None):
