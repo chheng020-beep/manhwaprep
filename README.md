@@ -56,7 +56,11 @@ Translation is done **in Claude**, not by a local model. The flow:
    - `transcript.md` — readable sheet (page · # · original text)
    - overlays — pages with numbered bubbles, so you can match line to box
 2. **Translate in Claude** — paste the numbered list; Claude returns the Khmer,
-   numbered to match.
+   numbered to match, plus a `POSTS: 1-4 | 5-9 | …` line grouping the bubbles into
+   story beats. Pasting the reply back fills the Khmer **and** stores the grouping,
+   so the FB split follows the story (each post a coherent beat), snapped to safe
+   gutters. With no grouping it falls back to a transcript heuristic (sentence
+   ends + scene-gap silences).
 3. **Typeset** (`--typeset en`) — cleans the pages, stitches them into a few long
    canvases, and opens the **native Khmer editor**. Use **2️⃣ Paste Khmer list…**
    to drop Claude's numbered Khmer onto the matching boxes, then position, style,

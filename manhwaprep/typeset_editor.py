@@ -67,6 +67,10 @@ from PySide6.QtWidgets import (
 # Khmer wherever it must, so both fit and measure correctly.
 WRAP_FLAGS = int(Qt.TextWordWrap) | int(Qt.TextWrapAnywhere)
 
+# story-heuristic post sizing, as multiples of canvas width
+IDEAL_FB = 1.4
+MAX_FB = 2.5
+
 _KHMER_FONT = None
 
 
@@ -604,6 +608,7 @@ class TypesetEditor(QWidget):
         self.images: list[ImageItem] = []
         self._inline_proxy = None
         self._inline_item = None
+        self._post_groups = []  # Claude's story grouping: [(first_n, last_n), ...]
         # touch-up painting (blend / erase / paint) + undo history
         self._tool = "select"
         self._brush_size = 28
@@ -1390,14 +1395,37 @@ class TypesetEditor(QWidget):
         body = "\n".join(s for _, s in lines)
         text = (
             "Translate each numbered line below into natural Khmer for a manhwa. "
-            "Keep the numbers and the [bubble]/[sfx] tags, one line each.\n\n" + body
+            "Keep the numbers and the [bubble]/[sfx] tags, one line each.\n\n"
+            "Then, on a final line, group the bubbles into Facebook posts — each "
+            "post a coherent emotional beat that ends on a little hook when it can "
+            "— as:\n"
+            "POSTS: 1-4 | 5-9 | 10-13\n\n" + body
         )
         QApplication.clipboard().setText(text)
         QMessageBox.information(
             self, "Copied",
             f"Copied {len(lines)} numbered lines (+ a prompt) to the clipboard.\n\n"
-            "Paste into Claude, then paste the Khmer back with “2️⃣ Paste Khmer list”.",
+            "Paste into Claude, then paste the reply back with “2️⃣ Paste Khmer "
+            "list” — it fills the Khmer AND reads the POSTS line for story splitting.",
         )
+
+    @staticmethod
+    def _parse_posts(text):
+        """Parse a 'POSTS: 1-4 | 5-9 | 10-13' line into [(1,4),(5,9),(10,13)]."""
+        import re
+
+        m = re.search(r"POSTS?\s*:\s*([0-9\-\s|,]+)", text, re.I)
+        if not m:
+            return []
+        groups = []
+        for part in re.split(r"[|,]", m.group(1)):
+            mm = re.match(r"\s*(\d+)\s*-\s*(\d+)", part)
+            if mm:
+                groups.append((int(mm.group(1)), int(mm.group(2))))
+            elif part.strip().isdigit():
+                n = int(part.strip())
+                groups.append((n, n))
+        return groups
 
     def _paste(self):
         from .psgen import parse_khmer_list
@@ -1405,8 +1433,17 @@ class TypesetEditor(QWidget):
         dlg = PasteDialog(self)
         if dlg.exec() != QDialog.Accepted:
             return
-        km = parse_khmer_list(dlg.text())
+        raw = dlg.text()
+        km = parse_khmer_list(raw)
+        posts = self._parse_posts(raw)
+        if posts:
+            self._post_groups = posts
         if not km:
+            if posts:
+                QMessageBox.information(
+                    self, "Story split set",
+                    f"Saved {len(posts)} post groups — FB panels will follow them.")
+                return
             QMessageBox.warning(self, "No lines", "No 'N. text' lines found.")
             return
         # Box numbers are unique across the whole chapter, so fill EVERY canvas in
@@ -1478,14 +1515,50 @@ class TypesetEditor(QWidget):
         rgb = buf.reshape(h, bpl)[:, : w * 3].reshape(h, w, 3)
         return rgb[:, :, ::-1].copy()  # RGB -> BGR
 
+    def _story_cuts(self, seg):
+        """Target cut rows that follow the story, for the boxes on THIS canvas.
+        Uses Claude's pasted POSTS grouping when present; otherwise falls back to
+        a transcript heuristic (sentence ends + scene-gap silences + size). Each
+        target is later snapped to the nearest safe gutter by the splitter."""
+        boxes = sorted(self.items, key=lambda it: it.y())
+        if len(boxes) < 2:
+            return None
+        H = float(seg["height"])
+        targets = []
+        if self._post_groups:
+            cut_after = {b for _, b in self._post_groups[:-1]}  # last n of each post
+            for i, it in enumerate(boxes[:-1]):
+                if it.n in cut_after:
+                    nxt = boxes[i + 1]
+                    targets.append((it.y() + it.h + nxt.y()) / 2)
+        else:
+            W = float(seg["width"])
+            ideal, hard = W * IDEAL_FB, W * MAX_FB
+            last = 0.0
+            for i, it in enumerate(boxes[:-1]):
+                nxt = boxes[i + 1]
+                bottom = it.y() + it.h
+                gap = nxt.y() - bottom
+                grown = bottom - last
+                ends = (it.text.strip()[-1:] in ".!?…។៕") if it.text.strip() else False
+                big_gap = gap > W * 0.5
+                if (grown >= ideal and (ends or big_gap)) or grown >= hard:
+                    cut = (bottom + nxt.y()) / 2
+                    targets.append(cut)
+                    last = cut
+        targets = sorted(t for t in targets if 8 < t < H - 8)
+        return targets or None
+
     def _split_segment(self, seg) -> list[str]:
         """Render the current canvas and cut it into FB panels at safe seams.
-        Text-box rects are passed as forbidden zones so no line is ever sliced."""
+        Text-box rects are forbidden zones (no line is ever sliced); story beats
+        (Claude grouping or heuristic) steer the cuts when available."""
         from . import splitter
 
         bgr = self._qimage_to_bgr(self._render(seg))
         protect = [(it.y(), it.y() + it.h) for it in self.items]
-        slices = splitter.split_panels(bgr, protect=protect)
+        slices = splitter.split_panels(
+            bgr, protect=protect, desired_cuts=self._story_cuts(seg))
         out_dir = os.path.join(self.base, "fb_panels")
         prefix = os.path.splitext(seg["image"])[0]  # canvas_001 -> canvas_001_NNN
         return splitter.write_panels(bgr, slices, out_dir, prefix=prefix)

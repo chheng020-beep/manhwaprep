@@ -43,17 +43,37 @@ def _row_cost(gray: np.ndarray) -> np.ndarray:
     return np.convolve(cost, k, mode="same")
 
 
+def _snap_cut(cost, forbidden, target, low, high):
+    """Slide a desired cut row to the nearest clean, non-text seam within
+    [low, high], biased toward the target. Returns a row index or None."""
+    if high <= low:
+        return None
+    seg = cost[low:high].astype(np.float64).copy()
+    seg[forbidden[low:high]] = np.inf
+    if not np.isfinite(seg).any():
+        free = np.where(~forbidden[low:high])[0]
+        return low + int(free[0]) if free.size else None
+    finite = seg[np.isfinite(seg)]
+    spread = float(finite.max() - finite.min()) or 1.0
+    dist = np.abs(np.arange(low, high) - target) / max(1, high - low)
+    return low + int(np.argmin(seg + 0.6 * spread * dist))
+
+
 def split_panels(
     image_bgr: np.ndarray,
     protect: list[tuple[float, float]] | None = None,
     min_h: int | None = None,
     max_h: int | None = None,
     ideal_h: int | None = None,
+    desired_cuts: list[int] | None = None,
 ) -> list[tuple[int, int]]:
     """Return a list of (y0, y1) slices covering the whole image top-to-bottom.
 
     protect : (y0, y1) row ranges that a cut must never fall inside (text boxes).
     min_h/max_h/ideal_h : panel-height window in px (defaults scale with width).
+    desired_cuts : target rows (story beats) — each is snapped to the nearest
+        safe gutter instead of using the size-based walk. Story beats win, but
+        never slice art or a text box.
     """
     H, W = image_bgr.shape[:2]
     max_h = int(max_h or W * MAX_RATIO)
@@ -62,7 +82,7 @@ def split_panels(
     min_h = max(1, min(min_h, max_h))
     ideal_h = max(min_h, min(ideal_h, max_h))
 
-    if H <= max_h:
+    if H <= max_h and not desired_cuts:
         return [(0, H)]
 
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
@@ -73,6 +93,21 @@ def split_panels(
         a = max(0, int(y0) - FORBID_MARGIN)
         b = min(H, int(y1) + FORBID_MARGIN)
         forbidden[a:b] = True
+
+    # Story mode: snap each requested beat boundary to the nearest clean gutter.
+    if desired_cuts:
+        win = max(60, int(W * 0.45))  # how far we'll slide to reach a gutter
+        cuts = [0]
+        for ty in sorted({int(t) for t in desired_cuts}):
+            if ty <= cuts[-1] + 8 or ty >= H - 8:
+                continue
+            best = _snap_cut(cost, forbidden, ty,
+                             max(cuts[-1] + 8, ty - win), min(H - 8, ty + win))
+            if best is not None and best > cuts[-1] + 8:
+                cuts.append(best)
+        cuts.append(H)
+        slices = [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
+        return _merge_lonely(slices, gray, forbidden, min_h)
 
     cuts = [0]
     pos = 0
