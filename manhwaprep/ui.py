@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -104,13 +105,49 @@ class Worker(QObject):
             self.failed.emit(str(e))
 
 
+class SplitWorker(QObject):
+    """Standalone Facebook-panel splitter: split a dropped image / folder of
+    images at safe seams. No download, no cleaning."""
+
+    status = Signal(str)
+    progress = Signal(str, int, int)
+    done = Signal(str, list)
+    failed = Signal(str)
+    stopped = Signal()
+
+    def __init__(self, source: str, detect: bool, control):
+        super().__init__()
+        self.source = source
+        self.detect = detect
+        self.control = control
+
+    def go(self):
+        try:
+            from . import splitter
+
+            out_dir, paths = splitter.split_source(
+                self.source,
+                detect=self.detect,
+                on_status=self.status.emit,
+                on_progress=lambda s, d, t: self.progress.emit(s, d, t),
+                control=self.control,
+            )
+            self.done.emit(out_dir, paths)
+        except PipelineStopped:
+            self.stopped.emit()
+        except Exception as e:
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
 class DropZone(QFrame):
     """A dashed box that accepts a dropped folder."""
 
     dropped = Signal(str)
 
-    def __init__(self):
+    def __init__(self, label="Drop a chapter folder here", files_ok=False):
         super().__init__()
+        self.files_ok = files_ok  # True -> emit a dropped file's own path
         self.setAcceptDrops(True)
         self.setFixedHeight(120)
         self.setStyleSheet(
@@ -118,8 +155,9 @@ class DropZone(QFrame):
             "background:#fafafa;}"
         )
         lay = QVBoxLayout(self)
-        lab = QLabel("Drop a chapter folder here")
+        lab = QLabel(label)
         lab.setAlignment(Qt.AlignCenter)
+        lab.setWordWrap(True)
         lab.setStyleSheet("border:none;color:#666;font-size:15px;")
         lay.addWidget(lab)
 
@@ -133,8 +171,9 @@ class DropZone(QFrame):
             if os.path.isdir(path):
                 self.dropped.emit(path)
                 return
-            if os.path.isfile(path):  # a file -> use its folder
-                self.dropped.emit(os.path.dirname(path))
+            if os.path.isfile(path):
+                # split mode keeps the file; clean mode uses its folder
+                self.dropped.emit(path if self.files_ok else os.path.dirname(path))
                 return
 
 
@@ -153,97 +192,18 @@ class MainWindow(QWidget):
         title = QLabel("ManhwaPrep")
         title.setFont(QFont("", 22, QFont.Bold))
         root.addWidget(title)
-        sub = QLabel("Download → erase text → stitch into long images.")
+        sub = QLabel("Pick a job below, then drop a folder/image (or paste a link).")
         sub.setStyleSheet("color:#777;")
         root.addWidget(sub)
 
-        self.drop = DropZone()
-        self.drop.dropped.connect(self._on_folder)
-        root.addWidget(self.drop)
-
-        browse = QPushButton("…or choose a folder")
-        browse.clicked.connect(self._browse)
-        root.addWidget(browse)
-
-        # URL row
-        url_row = QHBoxLayout()
-        self.url = QLineEdit()
-        self.url.setPlaceholderText("…or paste a chapter URL (e.g. 11toon)")
-        url_row.addWidget(self.url)
-        root.addLayout(url_row)
-
-        # segments row
-        seg_row = QHBoxLayout()
-        seg_row.addWidget(QLabel("Stitch into ~"))
-        self.segments = QSpinBox()
-        self.segments.setRange(1, 50)
-        self.segments.setValue(5)
-        seg_row.addWidget(self.segments)
-        seg_row.addWidget(QLabel("long images"))
-        seg_row.addStretch(1)
-        root.addLayout(seg_row)
-
-        self.remove_text = QCheckBox("Remove text (erase original speech)")
-        self.remove_text.setChecked(True)
-        root.addWidget(self.remove_text)
-
-        self.keep_sfx = QCheckBox("Keep SFX / action text (erase speech bubbles only)")
-        self.keep_sfx.setChecked(False)
-        root.addWidget(self.keep_sfx)
-
-        q_row = QHBoxLayout()
-        q_row.addWidget(QLabel("Cleaning quality:"))
-        self.quality = QComboBox()
-        self.quality.addItem("Balanced — MI-GAN (GPU, fast)", "migan")
-        self.quality.addItem("Best — LaMa (CPU, slow)", "lama")
-        self.quality.addItem("Fast — Telea (no model)", "telea")
-        q_row.addWidget(self.quality)
-        q_row.addStretch(1)
-        root.addLayout(q_row)
-
-        # Show which detection model is active (RT-DETR is automatic, not a choice).
-        has_rtdetr = os.path.exists(
-            os.path.expanduser("~/ManhwaPrep/models/detector_int8.onnx")
-        )
-        det_name = "comic-translate RT-DETR ✓" if has_rtdetr else "PP-OCR (fallback)"
-        self.det_info = QLabel(f"🧠 Detection: {det_name}")
-        self.det_info.setStyleSheet(
-            "color:#1a9e4b;" if has_rtdetr else "color:#a06000;"
-        )
-        root.addWidget(self.det_info)
-
-        # These only matter when removing text.
-        self.remove_text.toggled.connect(self.quality.setEnabled)
-        self.remove_text.toggled.connect(self.keep_sfx.setEnabled)
-
-        # transcript row — export numbered text for translating in Claude
-        self.transcript = None
-        if _ocr_available():
-            tx_row = QHBoxLayout()
-            tx_row.addWidget(QLabel("Transcript (for Claude):"))
-            self.transcript = QComboBox()
-            self.transcript.addItem("Off", None)
-            self.transcript.addItem("from Korean", "ko")
-            self.transcript.addItem("from English", "en")
-            tx_row.addWidget(self.transcript)
-            tx_row.addStretch(1)
-            root.addLayout(tx_row)
-
-        # native typesetting: clean + long canvas + open the Khmer editor
-        self.typeset = None
-        if _ocr_available():
-            ts_row = QHBoxLayout()
-            ts_row.addWidget(QLabel("Typeset Khmer (native):"))
-            self.typeset = QComboBox()
-            self.typeset.addItem("Off", None)
-            self.typeset.addItem("from Korean", "ko")
-            self.typeset.addItem("from English", "en")
-            ts_row.addWidget(self.typeset)
-            ts_row.addStretch(1)
-            self.edit_ts_btn = QPushButton("Open typeset editor…")
-            self.edit_ts_btn.clicked.connect(self._open_typeset)
-            ts_row.addWidget(self.edit_ts_btn)
-            root.addLayout(ts_row)
+        # Pick the job up top; each tab keeps its own settings so you never
+        # re-toggle anything to do a different task.
+        self.tabs = QTabWidget()
+        self._split_source = None
+        self.tabs.addTab(self._build_clean_tab(), "🧹 Clean & Prepare")
+        self.tabs.addTab(self._build_split_tab(), "✂️ Split for Facebook")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        root.addWidget(self.tabs)
 
         # action buttons: Go / Pause / Stop
         btn_row = QHBoxLayout()
@@ -254,7 +214,7 @@ class MainWindow(QWidget):
             "font-size:16px;font-weight:bold;}"
             "QPushButton:disabled{background:#9bbcf0;}"
         )
-        self.go.clicked.connect(self._start_from_url)
+        self.go.clicked.connect(self._on_go)
         btn_row.addWidget(self.go, 2)
         self.pause_btn = QPushButton("Pause")
         self.pause_btn.setFixedHeight(40)
@@ -303,45 +263,176 @@ class MainWindow(QWidget):
         self._pause_accum = 0.0
         self._pause_start = None
 
+    # -- tab construction ---------------------------------------------
+    def _build_clean_tab(self) -> QWidget:
+        tab = QWidget()
+        cl = QVBoxLayout(tab)
+        cl.setSpacing(10)
+
+        self.drop = DropZone("Drop a chapter folder here")
+        self.drop.dropped.connect(self._on_clean_drop)
+        cl.addWidget(self.drop)
+
+        browse = QPushButton("…or choose a folder")
+        browse.clicked.connect(self._browse)
+        cl.addWidget(browse)
+
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("…or paste a chapter URL (e.g. 11toon)")
+        cl.addWidget(self.url)
+
+        seg_row = QHBoxLayout()
+        seg_row.addWidget(QLabel("Stitch into ~"))
+        self.segments = QSpinBox()
+        self.segments.setRange(1, 50)
+        self.segments.setValue(5)
+        seg_row.addWidget(self.segments)
+        seg_row.addWidget(QLabel("long images"))
+        seg_row.addStretch(1)
+        cl.addLayout(seg_row)
+
+        self.remove_text = QCheckBox("Remove text (erase original speech)")
+        self.remove_text.setChecked(True)
+        cl.addWidget(self.remove_text)
+
+        self.keep_sfx = QCheckBox("Keep SFX / action text (erase speech bubbles only)")
+        self.keep_sfx.setChecked(False)
+        cl.addWidget(self.keep_sfx)
+
+        q_row = QHBoxLayout()
+        q_row.addWidget(QLabel("Cleaning quality:"))
+        self.quality = QComboBox()
+        self.quality.addItem("Balanced — MI-GAN (GPU, fast)", "migan")
+        self.quality.addItem("Best — LaMa (CPU, slow)", "lama")
+        self.quality.addItem("Fast — Telea (no model)", "telea")
+        q_row.addWidget(self.quality)
+        q_row.addStretch(1)
+        cl.addLayout(q_row)
+
+        # Show which detection model is active (RT-DETR is automatic, not a choice).
+        has_rtdetr = os.path.exists(
+            os.path.expanduser("~/ManhwaPrep/models/detector_int8.onnx")
+        )
+        det_name = "comic-translate RT-DETR ✓" if has_rtdetr else "PP-OCR (fallback)"
+        self.det_info = QLabel(f"🧠 Detection: {det_name}")
+        self.det_info.setStyleSheet("color:#1a9e4b;" if has_rtdetr else "color:#a06000;")
+        cl.addWidget(self.det_info)
+
+        # These only matter when removing text.
+        self.remove_text.toggled.connect(self.quality.setEnabled)
+        self.remove_text.toggled.connect(self.keep_sfx.setEnabled)
+
+        # transcript row — export numbered text for translating in Claude
+        self.transcript = None
+        if _ocr_available():
+            tx_row = QHBoxLayout()
+            tx_row.addWidget(QLabel("Transcript (for Claude):"))
+            self.transcript = QComboBox()
+            self.transcript.addItem("Off", None)
+            self.transcript.addItem("from Korean", "ko")
+            self.transcript.addItem("from English", "en")
+            tx_row.addWidget(self.transcript)
+            tx_row.addStretch(1)
+            cl.addLayout(tx_row)
+
+        # native typesetting: clean + long canvas + open the Khmer editor
+        self.typeset = None
+        if _ocr_available():
+            ts_row = QHBoxLayout()
+            ts_row.addWidget(QLabel("Typeset Khmer (native):"))
+            self.typeset = QComboBox()
+            self.typeset.addItem("Off", None)
+            self.typeset.addItem("from Korean", "ko")
+            self.typeset.addItem("from English", "en")
+            ts_row.addWidget(self.typeset)
+            ts_row.addStretch(1)
+            self.edit_ts_btn = QPushButton("Open typeset editor…")
+            self.edit_ts_btn.clicked.connect(self._open_typeset)
+            ts_row.addWidget(self.edit_ts_btn)
+            cl.addLayout(ts_row)
+
+        cl.addStretch(1)
+        return tab
+
+    def _build_split_tab(self) -> QWidget:
+        tab = QWidget()
+        sl = QVBoxLayout(tab)
+        sl.setSpacing(10)
+
+        self.split_drop = DropZone(
+            "Drop an image (or a folder of images) to slice into Facebook panels",
+            files_ok=True,
+        )
+        self.split_drop.dropped.connect(self._on_split_drop)
+        sl.addWidget(self.split_drop)
+
+        sbrowse = QPushButton("…or choose an image")
+        sbrowse.clicked.connect(self._browse_split_file)
+        sl.addWidget(sbrowse)
+
+        p_row = QHBoxLayout()
+        p_row.addWidget(QLabel("Text safety:"))
+        self.protect = QComboBox()
+        self.protect.addItem("Auto-detect & avoid text (safe, slower)", True)
+        self.protect.addItem("Gutter cuts only (fast, for clean images)", False)
+        p_row.addWidget(self.protect)
+        p_row.addStretch(1)
+        sl.addLayout(p_row)
+
+        hint = QLabel(
+            "Cuts land on safe gutters — never through a speech bubble or the "
+            "middle of a panel. Panels are saved to an 'fb_panels' folder next "
+            "to your image."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#777;")
+        sl.addWidget(hint)
+
+        sl.addStretch(1)
+        return tab
+
+    def _on_tab_changed(self, idx: int):
+        # Go means different things per tab; URL only applies to cleaning.
+        self.go.setText("Split for Facebook" if idx == 1 else "Go")
+
     # -- actions -------------------------------------------------------
     def _browse(self):
         path = QFileDialog.getExistingDirectory(self, "Choose chapter folder")
         if path:
-            self._on_folder(path)
+            self._on_clean_drop(path)
 
-    def _on_folder(self, path: str):
+    def _browse_split_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose an image to split", os.path.expanduser("~"),
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if path:
+            self._on_split_drop(path)
+
+    def _on_clean_drop(self, path: str):
         self.url.clear()
-        self._start(path)
+        self._start_clean(path)
 
-    def _start_from_url(self):
+    def _on_split_drop(self, path: str):
+        self._split_source = path
+        self._start_split(path)
+
+    def _on_go(self):
+        if self.tabs.currentIndex() == 1:  # Split tab
+            if self._split_source:
+                self._start_split(self._split_source)
+            else:
+                self._append("Drop an image or folder in the Split tab first.")
+            return
         src = self.url.text().strip()
         if not src:
             self._append("Paste a URL or drop a folder first.")
             return
-        self._start(src)
+        self._start_clean(src)
 
-    def _start(self, source: str):
-        self.log.clear()
-        self.bar.setRange(0, 0)  # busy until first progress
-        self.go.setEnabled(False)
-        self.open_btn.setEnabled(False)
-        self.pause_btn.setEnabled(True)
-        self.pause_btn.setText("Pause")
-        self.stop_btn.setEnabled(True)
-        self._append(f"Source: {source}")
-        self.activity.setStyleSheet(
-            "color:#2d7ff9;font-size:14px;font-weight:bold;"
-        )
-        self._t0 = time.monotonic()
-        self._spin_i = 0
-        self._pause_accum = 0.0
-        self._pause_start = None
+    def _start_clean(self, source: str):
         self._control = Control()
-        self._timer.start()
-        self._tick()
-
-        self._thread = QThread()
-        self._worker = Worker(
+        worker = Worker(
             source,
             self.segments.value(),
             self.remove_text.isChecked(),
@@ -351,14 +442,43 @@ class MainWindow(QWidget):
             self.typeset.currentData() if self.typeset else None,
             self._control,
         )
-        self._typeset_active = bool(self.typeset and self.typeset.currentData())
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.go)
-        self._worker.status.connect(self._append)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.done.connect(self._on_done)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.stopped.connect(self._on_stopped)
+        self._begin(source, worker,
+                    typeset_active=bool(self.typeset and self.typeset.currentData()))
+
+    def _start_split(self, source: str):
+        self._control = Control()
+        worker = SplitWorker(source, bool(self.protect.currentData()), self._control)
+        self._begin(source, worker, typeset_active=False)
+
+    def _begin(self, source: str, worker, typeset_active: bool = False):
+        """Shared run lifecycle: lock the UI, start the timer, run the worker
+        on its own thread, and wire its signals."""
+        self.log.clear()
+        self.bar.setRange(0, 0)  # busy until first progress
+        self.go.setEnabled(False)
+        self.open_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.pause_btn.setText("Pause")
+        self.stop_btn.setEnabled(True)
+        self._append(f"Source: {source}")
+        self.activity.setStyleSheet("color:#2d7ff9;font-size:14px;font-weight:bold;")
+        self._t0 = time.monotonic()
+        self._spin_i = 0
+        self._pause_accum = 0.0
+        self._pause_start = None
+        self._typeset_active = typeset_active
+        self._timer.start()
+        self._tick()
+
+        self._thread = QThread()
+        self._worker = worker
+        worker.moveToThread(self._thread)
+        self._thread.started.connect(worker.go)
+        worker.status.connect(self._append)
+        worker.progress.connect(self._on_progress)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        worker.stopped.connect(self._on_stopped)
         self._thread.start()
 
     def _toggle_pause(self):

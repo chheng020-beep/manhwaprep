@@ -20,10 +20,31 @@ detection model and the Telea inpaint, decoupled from the Qt app.
 ~/ManhwaPrep/run.sh "<url>" --typeset en         # clean + long canvas + native Khmer editor
 ```
 
-In the **GUI** you also get: a **Keep SFX** checkbox, a **Transcript (for
-Claude)** dropdown, a **Typeset Khmer (native)** dropdown with an **Open typeset
-editor…** button, and **Pause / Stop** buttons (they take effect at the next
-page boundary).
+The **GUI** has a task picker at the top:
+
+- **🧹 Clean & Prepare** — drop a folder / paste a URL; **Keep SFX** checkbox,
+  **Transcript (for Claude)** and **Typeset Khmer (native)** dropdowns, plus
+  **Pause / Stop** (they take effect at the next page boundary).
+- **✂️ Split for Facebook** — drop any image (or a folder of images) to slice it
+  into Facebook-sized panels. Each tab keeps its own settings, so you never
+  re-toggle anything to switch jobs.
+
+## Split for Facebook (standalone)
+
+Pick the **✂️ Split for Facebook** tab and drop an image — no cleaning or typeset
+needed. It cuts the tall image into post-sized panels, always at **safe seams**:
+never through a speech bubble or the middle of a panel, preferring the flat
+gutter bands between panels. Panel height is flexible (capped near 2.5× the width
+so Facebook doesn't over-compress it); when no clean gutter exists it cuts at the
+least-busy row anyway. Panels are written to an `fb_panels/` folder next to the
+image.
+
+**Text safety** dropdown: *Auto-detect & avoid text* runs the RT-DETR detector so
+cuts dodge any speech/SFX even on un-cleaned pages (slower); *Gutter cuts only*
+skips detection for speed on already-clean images.
+
+(The typeset editor also has **✂️ FB panels** buttons that split the finished
+Khmer-typeset canvas the same way, using the known text-box positions.)
 
 ## Khmer workflow (transcript → Claude → native typeset)
 

@@ -110,6 +110,78 @@ def split_panels(
     return [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
 
 
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+def _gather_images(source: str) -> list[str]:
+    if os.path.isfile(source):
+        return [source]
+    if os.path.isdir(source):
+        return [
+            os.path.join(source, f)
+            for f in sorted(os.listdir(source))
+            if f.lower().endswith(IMAGE_EXTS)
+        ]
+    return []
+
+
+def split_source(
+    source: str,
+    out_dir: str | None = None,
+    detect: bool = True,
+    on_status=None,
+    on_progress=None,
+    control=None,
+) -> tuple[str, list[str]]:
+    """Standalone splitter: split a single image OR every image in a folder into
+    Facebook panels. When `detect`, run the RT-DETR detector so cuts avoid speech
+    bubbles / SFX even though we have no typeset boxes to go by. No download, no
+    cleaning — just safe panel cuts. Returns (out_dir, panel_paths)."""
+    images = _gather_images(source)
+    if not images:
+        raise RuntimeError("No image(s) to split (need a file or a folder of images).")
+
+    det = None
+    if detect:
+        from .comicdetector import ComicDetector
+
+        if on_status:
+            on_status("Loading text detector…")
+        det = ComicDetector()
+
+    if out_dir is None:
+        root = os.path.dirname(images[0]) if os.path.isfile(source) else source
+        out_dir = os.path.join(root, "fb_panels")
+
+    paths: list[str] = []
+    for i, img_path in enumerate(images, 1):
+        if control is not None:
+            control.checkpoint()
+        im = cv2.imread(img_path)
+        if im is None:
+            if on_status:
+                on_status(f"  ! unreadable, skipped: {os.path.basename(img_path)}")
+            continue
+        protect: list[tuple[float, float]] = []
+        if det is not None:
+            res = det.detect(im)
+            for boxes in res.values():
+                for x1, y1, x2, y2 in boxes:
+                    protect.append((y1, y2))
+        slices = split_panels(im, protect=protect)
+        stem = os.path.splitext(os.path.basename(img_path))[0]
+        wrote = write_panels(im, slices, out_dir, prefix=stem)
+        paths.extend(wrote)
+        if on_status:
+            note = f" ({len(protect)} text region(s) protected)" if det else ""
+            on_status(f"  {os.path.basename(img_path)} → {len(wrote)} panel(s){note}")
+        if on_progress:
+            on_progress("split", i, len(images))
+    if not paths:
+        raise RuntimeError("Nothing was split.")
+    return out_dir, paths
+
+
 def write_panels(
     image_bgr: np.ndarray,
     slices: list[tuple[int, int]],
