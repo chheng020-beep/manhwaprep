@@ -14,12 +14,14 @@ import json
 import os
 import sys
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetricsF,
+    QIcon,
     QImage,
+    QKeySequence,
     QPainter,
     QPen,
     QPixmap,
@@ -39,6 +41,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -262,6 +266,7 @@ class TextBoxItem(QGraphicsItem):
 
     def to_dict(self):
         return {
+            "kind": "text",
             "n": self.n, "text": self.text, "x": self.x(), "y": self.y(),
             "w": self.w, "h": self.h, "font": self.font.family(),
             "size": self.max_size, "fill": self.fill.name(),
@@ -269,6 +274,150 @@ class TextBoxItem(QGraphicsItem):
             "bold": self.font.bold(), "italic": self.font.italic(),
             "underline": self.font.underline(), "align": int(self.align),
             "rot": self.rotation(),
+        }
+
+
+SFX_LIB_DIR = os.path.expanduser("~/ManhwaPrep/sfx_library")
+LIB_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+
+def _pixmap_to_b64(pix: QPixmap) -> str:
+    """Encode a pixmap as a base64 PNG (keeps transparency) for the project file."""
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.WriteOnly)
+    pix.save(buf, "PNG")
+    buf.close()
+    return bytes(ba.toBase64()).decode("ascii")
+
+
+def _b64_to_pixmap(s: str) -> QPixmap:
+    pix = QPixmap()
+    pix.loadFromData(QByteArray.fromBase64(s.encode("ascii")), "PNG")
+    return pix
+
+
+class ImageItem(QGraphicsItem):
+    """A pasted / loaded image — an SFX or sticker. Move by dragging the body,
+    resize FREELY via the 8 handles (stretch allowed), rotate. Composites over
+    the art with full transparency."""
+
+    HANDLE = 11
+    EDGE_GRAB = 9.0
+    _CURSORS = TextBoxItem._CURSORS
+
+    def __init__(self, pixmap: QPixmap, x, y, w=None, h=None):
+        super().__init__()
+        self._pix = pixmap
+        self.w = float(w) if w else float(max(1, pixmap.width()))
+        self.h = float(h) if h else float(max(1, pixmap.height()))
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
+        )
+        self.setAcceptHoverEvents(True)
+        self.setPos(x, y)
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
+        self._resize = None
+        self._start = None
+
+    def boundingRect(self) -> QRectF:
+        m = self.HANDLE
+        return QRectF(-m, -m, self.w + 2 * m, self.h + 2 * m)
+
+    def _handles(self) -> dict:
+        w, h, s = self.w, self.h, self.HANDLE
+        pts = {
+            "tl": (0, 0), "tr": (w, 0), "bl": (0, h), "br": (w, h),
+            "t": (w / 2, 0), "b": (w / 2, h), "l": (0, h / 2), "r": (w, h / 2),
+        }
+        return {k: QRectF(px - s / 2, py - s / 2, s, s) for k, (px, py) in pts.items()}
+
+    def _handle_at(self, pos):
+        hs = self._handles()
+        for k in ("tl", "tr", "bl", "br"):
+            if hs[k].contains(pos):
+                return k
+        x, y, w, h, e = pos.x(), pos.y(), self.w, self.h, self.EDGE_GRAB
+        if -e <= y <= h + e:
+            if abs(x) <= e:
+                return "l"
+            if abs(x - w) <= e:
+                return "r"
+        if -e <= x <= w + e:
+            if abs(y) <= e:
+                return "t"
+            if abs(y - h) <= e:
+                return "b"
+        return None
+
+    def paint(self, p, opt, widget=None):
+        p.drawPixmap(QRectF(0, 0, self.w, self.h), self._pix,
+                     QRectF(self._pix.rect()))
+        if self.isSelected():
+            pen = QPen(QColor(0, 150, 255))
+            pen.setStyle(Qt.DashLine)
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(0, 0, self.w, self.h))
+            p.setBrush(QColor(255, 255, 255))
+            p.setPen(QPen(QColor(0, 150, 255)))
+            for hr in self._handles().values():
+                p.drawRect(hr)
+
+    def hoverMoveEvent(self, e):
+        k = self._handle_at(e.pos()) if self.isSelected() else None
+        self.setCursor(self._CURSORS.get(k, Qt.OpenHandCursor))
+        super().hoverMoveEvent(e)
+
+    def mousePressEvent(self, e):
+        k = self._handle_at(e.pos()) if self.isSelected() else None
+        if k:
+            self._resize = k
+            self._start = (self.w, self.h, self.x(), self.y(), 0.0, e.scenePos())
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if not self._resize:
+            super().mouseMoveEvent(e)
+            return
+        w0, h0, x0, y0, _, sp0 = self._start
+        d = e.scenePos() - sp0
+        dx, dy = d.x(), d.y()
+        k = self._resize
+        MIN = 12.0
+        neww, newh, newx, newy = w0, h0, x0, y0
+        if k in ("r", "tr", "br"):
+            neww, newx = max(MIN, w0 + dx), x0
+        elif k in ("l", "tl", "bl"):
+            neww = max(MIN, w0 - dx)
+            newx = x0 + (w0 - neww)
+        if k in ("b", "bl", "br"):
+            newh, newy = max(MIN, h0 + dy), y0
+        elif k in ("t", "tl", "tr"):
+            newh = max(MIN, h0 - dy)
+            newy = y0 + (h0 - newh)
+        self.prepareGeometryChange()
+        self.w, self.h = neww, newh
+        self.setPos(newx, newy)
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
+        self.update()
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if self._resize:
+            self._resize = None
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
+
+    def to_dict(self):
+        return {
+            "kind": "image", "x": self.x(), "y": self.y(),
+            "w": self.w, "h": self.h, "rot": self.rotation(),
+            "data": _pixmap_to_b64(self._pix),
         }
 
 
@@ -351,6 +500,7 @@ class TypesetEditor(QWidget):
         self.segments = self.layout.get("segments", [])
         self.seg_idx = 0
         self.items: list[TextBoxItem] = []
+        self.images: list[ImageItem] = []
         self._inline_proxy = None
         self._inline_item = None
 
@@ -393,11 +543,32 @@ class TypesetEditor(QWidget):
         addrow = QHBoxLayout()
         add_btn = QPushButton("➕ Add box")
         add_btn.clicked.connect(self._add_box)
-        del_btn = QPushButton("🗑 Delete box")
-        del_btn.clicked.connect(self._delete_box)
+        del_btn = QPushButton("🗑 Delete")
+        del_btn.clicked.connect(self._delete_selected)
         addrow.addWidget(add_btn)
         addrow.addWidget(del_btn)
         col.addLayout(addrow)
+
+        img_btn = QPushButton("🖼 Add image (SFX / sticker)…")
+        img_btn.setToolTip("Add an image, or just press Ctrl+V to paste one")
+        img_btn.clicked.connect(self._add_image)
+        col.addWidget(img_btn)
+
+        # SFX library: upload once, click a thumbnail to drop it on the canvas.
+        col.addWidget(QLabel("SFX library — click to place:"))
+        self.lib = QListWidget()
+        self.lib.setViewMode(QListWidget.IconMode)
+        self.lib.setIconSize(QSize(56, 56))
+        self.lib.setResizeMode(QListWidget.Adjust)
+        self.lib.setMovement(QListWidget.Static)
+        self.lib.setSpacing(4)
+        self.lib.setFixedHeight(150)
+        self.lib.itemClicked.connect(self._lib_clicked)
+        col.addWidget(self.lib)
+        lib_up = QPushButton("⬆ Upload SFX to library…")
+        lib_up.clicked.connect(self._upload_sfx)
+        col.addWidget(lib_up)
+        self._refresh_library()
 
         col.addWidget(QLabel("Selected text:"))
         self.text_edit = QPlainTextEdit()
@@ -504,7 +675,10 @@ class TypesetEditor(QWidget):
     # -- segment handling ----------------------------------------------
     def _commit_items(self):
         if self.segments:
-            self.segments[self.seg_idx]["_state"] = [it.to_dict() for it in self.items]
+            self.segments[self.seg_idx]["_state"] = (
+                [it.to_dict() for it in self.items]
+                + [im.to_dict() for im in self.images]
+            )
 
     def _go(self, d):
         self._commit_items()
@@ -517,6 +691,7 @@ class TypesetEditor(QWidget):
         seg = self.segments[idx]
         self.scene.clear()
         self.items = []
+        self.images = []
         pix = QPixmap(os.path.join(self.base, seg["image"]))
         bg = QGraphicsPixmapItem(pix)
         bg.setZValue(-1)
@@ -525,6 +700,15 @@ class TypesetEditor(QWidget):
         state = seg.get("_state")
         if state:
             for d in state:
+                if d.get("kind") == "image":
+                    im = ImageItem(_b64_to_pixmap(d["data"]),
+                                   d["x"], d["y"], d["w"], d["h"])
+                    self.scene.addItem(im)
+                    if d.get("rot"):
+                        im.setTransformOriginPoint(im.w / 2, im.h / 2)
+                        im.setRotation(d["rot"])
+                    self.images.append(im)
+                    continue
                 it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
                 it.font = QFont(d["font"])
                 it.max_size = float(d["size"])  # restore the font cap
@@ -678,17 +862,99 @@ class TypesetEditor(QWidget):
         self.scene.clearSelection()
         it.setSelected(True)
 
-    def _delete_box(self):
-        for it in list(self._selected()):
+    def _delete_selected(self):
+        for it in list(self.scene.selectedItems()):
             self.scene.removeItem(it)
             if it in self.items:
                 self.items.remove(it)
+            if it in self.images:
+                self.images.remove(it)
 
     def keyPressEvent(self, e):
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected():
-            self._delete_box()
+        if e.matches(QKeySequence.Paste) or (
+            e.key() == Qt.Key_V and e.modifiers() & Qt.ControlModifier
+        ):
+            self._paste_clipboard_image()
+            return
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.scene.selectedItems():
+            self._delete_selected()
+            return
+        super().keyPressEvent(e)
+
+    # -- images (SFX / stickers) ---------------------------------------
+    def _place_image(self, pixmap: QPixmap):
+        """Drop a pixmap on the canvas, centred in the current view and scaled
+        down if it's bigger than the canvas. Selected and ready to drag."""
+        if pixmap.isNull():
+            return None
+        w, h = float(pixmap.width()), float(pixmap.height())
+        limit = max(64.0, self.scene.width() * 0.6)  # don't dwarf the page
+        if w > limit:
+            h *= limit / w
+            w = limit
+        center = self.view.mapToScene(self.view.viewport().rect().center())
+        im = ImageItem(pixmap, center.x() - w / 2, center.y() - h / 2, w, h)
+        self.scene.addItem(im)
+        self.images.append(im)
+        self.scene.clearSelection()
+        im.setSelected(True)
+        return im
+
+    def _add_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add image (SFX / sticker)", SFX_LIB_DIR,
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if path:
+            self._place_image(QPixmap(path))
+
+    def _paste_clipboard_image(self):
+        img = QApplication.clipboard().image()
+        if not img.isNull():
+            self._place_image(QPixmap.fromImage(img))
         else:
-            super().keyPressEvent(e)
+            self._append_status("Clipboard has no image to paste.")
+
+    def _append_status(self, msg):
+        # transient feedback without a modal; reuse the window title briefly.
+        self.setWindowTitle(msg)
+
+    # -- SFX library ---------------------------------------------------
+    def _refresh_library(self):
+        self.lib.clear()
+        if not os.path.isdir(SFX_LIB_DIR):
+            return
+        for name in sorted(os.listdir(SFX_LIB_DIR)):
+            if not name.lower().endswith(LIB_EXTS):
+                continue
+            path = os.path.join(SFX_LIB_DIR, name)
+            icon = QIcon(QPixmap(path))
+            item = QListWidgetItem(icon, "")
+            item.setToolTip(name)
+            item.setData(Qt.UserRole, path)
+            self.lib.addItem(item)
+
+    def _upload_sfx(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Upload SFX to library", os.path.expanduser("~"),
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if not paths:
+            return
+        import shutil
+
+        os.makedirs(SFX_LIB_DIR, exist_ok=True)
+        for p in paths:
+            try:
+                shutil.copy2(p, os.path.join(SFX_LIB_DIR, os.path.basename(p)))
+            except Exception:
+                pass
+        self._refresh_library()
+
+    def _lib_clicked(self, item):
+        path = item.data(Qt.UserRole)
+        if path and os.path.exists(path):
+            self._place_image(QPixmap(path))
 
     def _toggle_bold(self):
         for it in self._selected():
