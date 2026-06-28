@@ -49,6 +49,10 @@ from PySide6.QtWidgets import (
 )
 
 KHMER_FONT = "Khmer Sangam MN"
+# Khmer has no spaces between words, so word-wrap alone leaves it as one huge
+# unbreakable line. WrapAtWordBoundaryOrAnywhere wraps English at spaces and
+# Khmer wherever it must, so both fit and measure correctly.
+WRAP_FLAGS = int(Qt.TextWordWrap) | int(Qt.TextWrapAnywhere)
 
 
 class TextBoxItem(QGraphicsItem):
@@ -102,7 +106,7 @@ class TextBoxItem(QGraphicsItem):
         f = QFont(self.font)
         f.setPointSizeF(size)
         fm = QFontMetricsF(f)
-        flags = int(Qt.AlignHCenter) | int(Qt.TextWordWrap)
+        flags = int(Qt.AlignHCenter) | WRAP_FLAGS
         r = fm.boundingRect(QRectF(0, 0, max(8.0, self.w), 1e7), flags, text)
         return r.height() <= self.h - 2 and r.width() <= self.w + 0.5
 
@@ -165,8 +169,10 @@ class TextBoxItem(QGraphicsItem):
         p.save()
         p.setClipRect(r)  # text can never render outside the box
         p.setFont(self.font)
-        flags = int(self.align) | int(Qt.TextWordWrap)
-        ow = self.outline_w
+        flags = int(self.align) | WRAP_FLAGS
+        # Keep the halo proportional to the text so it stays readable on dark
+        # art even at large sizes (a fixed 3px ring vanishes behind big glyphs).
+        ow = max(self.outline_w, round(self.font.pointSizeF() * 0.10))
         if ow > 0 and self.text:
             p.setPen(self.outline)
             for dx in range(-ow, ow + 1):
@@ -600,13 +606,18 @@ class TypesetEditor(QWidget):
         self._commit_inline()
 
         def grow():
-            # keep the editor exactly as tall as its text so nothing hides while
-            # typing; mirrors the box's auto-height behaviour.
+            # Keep the overlay the size of the box (so editing looks like the
+            # final), but vertically centre the text the way the box does so it
+            # doesn't visibly jump up when you start editing. Grow only if the
+            # text is genuinely taller than the box.
             te = self._inline_proxy.widget() if self._inline_proxy else None
             if te is None:
                 return
             doc_h = te.document().size().height()
-            te.setFixedHeight(int(max(item.h, doc_h + 2)))
+            h = max(item.h, doc_h + 2)
+            te.setFixedHeight(int(h))
+            top = max(0, int((item.h - doc_h) / 2))  # match the box's vcentre
+            te.setViewportMargins(0, top, 0, 0)
 
         te = _InlineEdit(self._commit_inline, on_grow=grow)
         te.setFont(QFont(item.font))
