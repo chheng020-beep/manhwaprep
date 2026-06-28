@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -76,6 +78,7 @@ class TextBoxItem(QGraphicsItem):
         self.outline_w = 3
         self.align = Qt.AlignHCenter | Qt.AlignVCenter
         self.on_edit = None  # set by the editor: callback(item) for inline edit
+        self._editing = False  # True while the inline editor overlays this box
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
@@ -128,6 +131,8 @@ class TextBoxItem(QGraphicsItem):
 
     def paint(self, p, opt, widget=None):
         r = QRectF(0, 0, self.w, self.h)
+        if self._editing:
+            return  # the inline overlay draws the text in our place (WYSIWYG)
         p.save()
         p.setClipRect(r)  # text can never render outside the box
         p.setFont(self.font)
@@ -254,12 +259,21 @@ class _CanvasView(QGraphicsView):
             super().wheelEvent(e)
 
 
-class _InlineEdit(QPlainTextEdit):
-    """Temporary on-canvas editor; commits on focus-out or Esc."""
+class _InlineEdit(QTextEdit):
+    """Temporary on-canvas editor drawn transparently right over the text box,
+    so what you type looks like the final result. Commits on focus-out or Esc;
+    grows to fit so text never hides while typing."""
 
-    def __init__(self, on_done):
+    def __init__(self, on_done, on_grow=None):
         super().__init__()
         self._on_done = on_done
+        self._on_grow = on_grow
+        self.setAcceptRichText(False)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.document().setDocumentMargin(0)
+        if on_grow is not None:
+            self.textChanged.connect(on_grow)
 
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
@@ -550,21 +564,37 @@ class TypesetEditor(QWidget):
     # -- inline (double-click) editing ---------------------------------
     def _start_inline_edit(self, item):
         self._commit_inline()
-        te = _InlineEdit(self._commit_inline)
+
+        def grow():
+            # keep the editor exactly as tall as its text so nothing hides while
+            # typing; mirrors the box's auto-height behaviour.
+            te = self._inline_proxy.widget() if self._inline_proxy else None
+            if te is None:
+                return
+            doc_h = te.document().size().height()
+            te.setFixedHeight(int(max(item.h, doc_h + 2)))
+
+        te = _InlineEdit(self._commit_inline, on_grow=grow)
+        te.setFont(QFont(item.font))
         te.setPlainText(item.text)
-        f = QFont(item.font)
-        te.setFont(f)
+        te.setAlignment(Qt.AlignHCenter)  # match the box's centred layout
+        col = item.fill.name()
+        # transparent background → no white block; text colour matches the final.
         te.setStyleSheet(
-            "background: rgba(255,255,255,235); border:1px solid #2d7ff9;"
+            f"QTextEdit{{background:transparent;border:1px dashed #2d7ff9;"
+            f"color:{col};padding:0px;}}"
         )
         proxy = self.scene.addWidget(te)
         proxy.setZValue(1000)
         proxy.setPos(item.x(), item.y())
-        te.setFixedSize(int(max(80, item.w)), int(max(48, item.h)))
+        te.setFixedWidth(int(max(24, item.w)))  # same width → same wrapping
+        item._editing = True  # stop the box drawing its own copy of the text
+        item.update()
         self._inline_proxy = proxy
         self._inline_item = item
+        grow()  # size to the existing text right away
         te.setFocus()
-        te.selectAll()
+        te.moveCursor(QTextCursor.End)  # caret at end, no destructive select-all
 
     def _commit_inline(self):
         if not self._inline_proxy:
@@ -572,6 +602,7 @@ class TypesetEditor(QWidget):
         proxy, it = self._inline_proxy, self._inline_item
         self._inline_proxy, self._inline_item = None, None
         it.text = proxy.widget().toPlainText()
+        it._editing = False  # box paints its own (outlined) text again
         it._fit_font()
         it.update()
         if proxy.scene():
