@@ -672,6 +672,17 @@ class TypesetEditor(QWidget):
         root.addWidget(self._build_panel(), 0)
         self._load_project()  # offer to resume a saved project (sets seg_idx etc.)
         self._load_segment(self.seg_idx)
+        self._register_recent()  # show this chapter on the home screen
+
+    def _register_recent(self):
+        try:
+            from . import recents
+            thumb = (os.path.join(self.base, self.segments[0]["image"])
+                     if self.segments else "")
+            recents.add_recent(self.layout_path,
+                               self.layout.get("chapter", ""), thumb)
+        except Exception:
+            pass
 
     # -- side panel ----------------------------------------------------
     @staticmethod
@@ -1792,10 +1803,11 @@ class TypesetEditor(QWidget):
         path = os.path.join(self.base, "typeset_project.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(proj, f, ensure_ascii=False, indent=2)
+        self._register_recent()  # bump it to the top of the home screen
         QMessageBox.information(
             self, "Saved",
-            f"Project saved →\n{path}\n\nReopen this chapter's layout.json later "
-            "to resume exactly where you left off.")
+            f"Project saved →\n{path}\n\nReopen it from the app's home screen, or "
+            "this chapter's layout.json, to resume where you left off.")
 
     def _load_project(self):
         """If a saved project exists for this chapter, offer to resume it —

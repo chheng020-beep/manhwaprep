@@ -8,14 +8,15 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,8 +24,10 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -200,8 +203,12 @@ class MainWindow(QWidget):
         # re-toggle anything to do a different task.
         self.tabs = QTabWidget()
         self._split_source = None
-        self.tabs.addTab(self._build_clean_tab(), "🧹 Clean & Prepare")
-        self.tabs.addTab(self._build_split_tab(), "✂️ Split for Facebook")
+        self._projects_tab = self._build_projects_tab()
+        self._clean_tab = self._build_clean_tab()
+        self._split_tab = self._build_split_tab()
+        self.tabs.addTab(self._projects_tab, "🗂 Projects")
+        self.tabs.addTab(self._clean_tab, "🧹 Clean & Prepare")
+        self.tabs.addTab(self._split_tab, "✂️ Split for Facebook")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self.tabs)
 
@@ -264,6 +271,72 @@ class MainWindow(QWidget):
         self._pause_start = None
 
     # -- tab construction ---------------------------------------------
+    def _build_projects_tab(self) -> QWidget:
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("<b>Recent projects</b> — click to continue"))
+        head.addStretch(1)
+        refresh = QPushButton("↻ Refresh")
+        refresh.clicked.connect(self._refresh_projects)
+        head.addWidget(refresh)
+        v.addLayout(head)
+
+        self._proj_scroll = QScrollArea()
+        self._proj_scroll.setWidgetResizable(True)
+        self._proj_scroll.setFrameShape(QFrame.NoFrame)
+        self._proj_grid_host = QWidget()
+        self._proj_grid = QGridLayout(self._proj_grid_host)
+        self._proj_grid.setSpacing(12)
+        self._proj_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._proj_scroll.setWidget(self._proj_grid_host)
+        v.addWidget(self._proj_scroll, 1)
+        self._refresh_projects()
+        return tab
+
+    def _refresh_projects(self):
+        from . import recents
+
+        # clear the grid
+        while self._proj_grid.count():
+            it = self._proj_grid.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        entries = recents.list_recent()
+        if not entries:
+            self._proj_grid.addWidget(
+                QLabel("No saved projects yet.\nRun a Typeset job, then Save "
+                       "project in the editor — it'll appear here."), 0, 0)
+            return
+        cols = 4
+        for i, e in enumerate(entries):
+            self._proj_grid.addWidget(self._make_project_card(e), i // cols, i % cols)
+
+    def _make_project_card(self, entry: dict) -> QWidget:
+        btn = QToolButton()
+        btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        btn.setFixedSize(168, 184)
+        btn.setStyleSheet(
+            "QToolButton{border:1px solid #ccc;border-radius:10px;background:#fff;"
+            "padding:6px;} QToolButton:hover{border:1px solid #2d7ff9;}")
+        thumb = entry.get("thumb", "")
+        if thumb and os.path.exists(thumb):
+            pm = QPixmap(thumb)
+            if not pm.isNull():
+                side = min(pm.width(), pm.height())
+                pm = pm.copy(0, 0, pm.width(), side)  # square crop from the top
+                pm = pm.scaled(150, 120, Qt.KeepAspectRatioByExpanding,
+                               Qt.SmoothTransformation)
+                btn.setIcon(QIcon(pm))
+                btn.setIconSize(QSize(150, 120))
+        name = entry.get("chapter") or os.path.basename(
+            os.path.dirname(os.path.dirname(entry.get("layout", ""))))
+        btn.setText(name[:28])
+        btn.setToolTip(entry.get("layout", ""))
+        btn.clicked.connect(lambda _=False, p=entry.get("layout"): self._open_typeset(p))
+        return btn
+
     def _build_clean_tab(self) -> QWidget:
         tab = QWidget()
         cl = QVBoxLayout(tab)
@@ -392,8 +465,13 @@ class MainWindow(QWidget):
         return tab
 
     def _on_tab_changed(self, idx: int):
-        # Go means different things per tab; URL only applies to cleaning.
-        self.go.setText("Split for Facebook" if idx == 1 else "Go")
+        # Go means different things per tab; the Projects tab has no Go action.
+        w = self.tabs.currentWidget()
+        on_projects = w is self._projects_tab
+        self.go.setEnabled(not on_projects)
+        self.go.setText("Split for Facebook" if w is self._split_tab else "Go")
+        if on_projects:
+            self._refresh_projects()  # pick up anything saved since opening
 
     # -- actions -------------------------------------------------------
     def _browse(self):
@@ -418,7 +496,9 @@ class MainWindow(QWidget):
         self._start_split(path)
 
     def _on_go(self):
-        if self.tabs.currentIndex() == 1:  # Split tab
+        if self.tabs.currentWidget() is self._projects_tab:
+            return
+        if self.tabs.currentWidget() is self._split_tab:
             if self._split_source:
                 self._start_split(self._split_source)
             else:
