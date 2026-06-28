@@ -33,6 +33,11 @@ SLAB_OVERLAP = 250
 _STROKE_KERNEL = 15   # > stroke width, < text height
 _STROKE_THRESH = 38   # top/black-hat response above this = a stroke pixel
 _MASK_DILATE = 2      # cover anti-aliased halo
+# SFX (pastel / neon) text differs from the art by COLOUR, not brightness, so a
+# grayscale stroke test misses it. These drive the colour-aware SFX mask.
+_SFX_COLOR_THRESH = 16    # local Lab colour deviation above this = an SFX pixel
+_SFX_FILL_FRAC = 0.10     # if the colour test covers < this of a detected SFX
+                          # box, the strokes were missed -> fill the whole box
 
 
 class TextCleaner:
@@ -178,6 +183,43 @@ class TextCleaner:
         return mask
 
     @staticmethod
+    def _sfx_mask(img_bgr: np.ndarray, boxes: list[np.ndarray]) -> np.ndarray:
+        """Colour-aware mask for SFX (pastel / neon) text. Pixels that deviate
+        from their LOCAL colour (Lab distance) are kept — so light-pale and neon
+        strokes the grayscale test misses are caught. If that still covers too
+        little of a detected SFX box, the strokes were missed, so the whole box
+        is filled (inpaint rebuilds the art behind it)."""
+        h, w = img_bgr.shape[:2]
+        out = np.zeros((h, w), np.uint8)
+        if not boxes:
+            return out
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        k = _STROKE_KERNEL * 3 | 1  # local-mean window (odd)
+        local = cv2.GaussianBlur(lab, (k, k), 0)
+        dist = np.sqrt(((lab - local) ** 2).sum(axis=2))  # local colour deviation
+        stroke = (dist > _SFX_COLOR_THRESH).astype(np.uint8) * 255
+        stroke = cv2.morphologyEx(
+            stroke, cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),  # connect glyphs
+        )
+        for b in boxes:
+            box = np.zeros((h, w), np.uint8)
+            cv2.fillPoly(box, [b], 255)
+            s = cv2.bitwise_and(stroke, box)
+            area = int((box > 0).sum())
+            if area and (s > 0).sum() / area < _SFX_FILL_FRAC:
+                s = box  # colour test missed the pale strokes -> erase the box
+            out = np.maximum(out, s)
+        if _MASK_DILATE:
+            out = cv2.dilate(
+                out,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (_MASK_DILATE * 2 + 1,) * 2
+                ),
+            )
+        return out
+
+    @staticmethod
     def _bubble_mask(crop_bgr: np.ndarray) -> np.ndarray:
         """Detect speech bubbles as filled regions (tight closed perimeters).
 
@@ -228,13 +270,16 @@ class TextCleaner:
         h, w = img_bgr.shape[:2]
         if self._detector is not None:
             dets = self._detector.detect(img_bgr)
-            # text_bubble = dialogue (always erase); text_free = SFX (only if
-            # include_sfx). The model already separates them — no heuristics.
-            text_boxes = list(dets["text_bubble"])
-            if self.include_sfx:
-                text_boxes += dets["text_free"]
-            polys = [self._rect_to_poly(b) for b in text_boxes]
-            return self._stroke_mask(img_bgr, polys), len(text_boxes)
+            # text_bubble = dialogue: dark/light on a bubble -> grayscale strokes.
+            dialogue = [self._rect_to_poly(b) for b in dets["text_bubble"]]
+            mask = self._stroke_mask(img_bgr, dialogue)
+            n = len(dialogue)
+            # text_free = SFX: often pastel / neon, so use the colour-aware mask.
+            if self.include_sfx and dets["text_free"]:
+                sfx = [self._rect_to_poly(b) for b in dets["text_free"]]
+                mask = np.maximum(mask, self._sfx_mask(img_bgr, sfx))
+                n += len(sfx)
+            return mask, n
 
         # -- fallback: OCR detection + (heuristic) bubble/SFX handling --
         mask = np.zeros((h, w), np.uint8)
