@@ -1028,6 +1028,12 @@ class TypesetEditor(QWidget):
         self.prev.setEnabled(idx > 0)
         self.next.setEnabled(idx < len(self.segments) - 1)
         self._reset_history()
+        # start each canvas at the TOP (centred horizontally), not wherever the
+        # previous canvas was scrolled to.
+        vbar = self.view.verticalScrollBar()
+        hbar = self.view.horizontalScrollBar()
+        vbar.setValue(vbar.minimum())
+        hbar.setValue((hbar.minimum() + hbar.maximum()) // 2)
 
     # -- editing -------------------------------------------------------
     def _selected(self):
