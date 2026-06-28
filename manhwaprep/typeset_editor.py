@@ -811,6 +811,18 @@ class TypesetEditor(QWidget):
         self.export_all_btn = QPushButton("Export ALL canvases")
         self.export_all_btn.clicked.connect(self._export_all)
         eg.addWidget(self.export_all_btn)
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel("FB split"))
+        self.split_mode = QComboBox()
+        self.split_mode.addItem("Auto (story → heuristic)", "auto")
+        self.split_mode.addItem("Heuristic beats only", "heuristic")
+        self.split_mode.addItem("Visual gutters only", "visual")
+        self.split_mode.setToolTip(
+            "Auto: use Claude's pasted POSTS grouping, else fall back to the "
+            "heuristic.\nHeuristic: ignore any grouping and cut at sentence ends / "
+            "scene gaps.\nVisual: ignore the story, cut only by gutters + size.")
+        srow.addWidget(self.split_mode, 1)
+        eg.addLayout(srow)
         fbrow = QHBoxLayout()
         self.fb_btn = QPushButton("✂️ FB panels")
         self.fb_btn.setToolTip(
@@ -1520,12 +1532,16 @@ class TypesetEditor(QWidget):
         Uses Claude's pasted POSTS grouping when present; otherwise falls back to
         a transcript heuristic (sentence ends + scene-gap silences + size). Each
         target is later snapped to the nearest safe gutter by the splitter."""
+        mode = self.split_mode.currentData()
+        if mode == "visual":
+            return None
         boxes = sorted(self.items, key=lambda it: it.y())
         if len(boxes) < 2:
             return None
         H = float(seg["height"])
         targets = []
-        if self._post_groups:
+        use_groups = self._post_groups and mode != "heuristic"
+        if use_groups:
             cut_after = {b for _, b in self._post_groups[:-1]}  # last n of each post
             for i, it in enumerate(boxes[:-1]):
                 if it.n in cut_after:
