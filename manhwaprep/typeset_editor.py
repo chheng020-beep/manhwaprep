@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -857,7 +858,7 @@ class TypesetEditor(QWidget):
         self.paste_btn.clicked.connect(self._paste)
         krow.addWidget(self.copy_btn); krow.addWidget(self.paste_btn)
         ig.addLayout(krow)
-        ig.addWidget(QLabel("SFX library — click to place:"))
+        ig.addWidget(QLabel("SFX library — click to place, right-click to delete:"))
         self.lib = QListWidget()
         self.lib.setViewMode(QListWidget.IconMode)
         self.lib.setIconSize(QSize(52, 52))
@@ -866,6 +867,8 @@ class TypesetEditor(QWidget):
         self.lib.setSpacing(4)
         self.lib.setFixedHeight(120)
         self.lib.itemClicked.connect(self._lib_clicked)
+        self.lib.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.lib.customContextMenuRequested.connect(self._lib_menu)
         ig.addWidget(self.lib)
         lib_up = QPushButton("⬆ Upload SFX…")
         lib_up.clicked.connect(self._upload_sfx)
@@ -1274,6 +1277,24 @@ class TypesetEditor(QWidget):
         path = item.data(Qt.UserRole)
         if path and os.path.exists(path):
             self._place_image(QPixmap(path))
+
+    def _lib_menu(self, pos):
+        item = self.lib.itemAt(pos)
+        if item is None:
+            return
+        path = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        act = menu.addAction("🗑 Delete from library")
+        if menu.exec(self.lib.mapToGlobal(pos)) is act and path:
+            if QMessageBox.question(
+                    self, "Delete SFX",
+                    f"Remove “{os.path.basename(path)}” from your SFX library?\n"
+                    "(This deletes the saved file.)") == QMessageBox.Yes:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                self._refresh_library()
 
     # -- touch-up painting (blend / erase / paint) ---------------------
     def _select_tool(self, name):
