@@ -441,6 +441,18 @@ class TypesetEditor(QWidget):
         self.export_all_btn = QPushButton("Export ALL canvases")
         self.export_all_btn.clicked.connect(self._export_all)
         col.addWidget(self.export_all_btn)
+
+        self.fb_btn = QPushButton("✂️ FB panels (this canvas)")
+        self.fb_btn.setToolTip(
+            "Slice this canvas into Facebook-sized panels, cutting only at safe "
+            "gutters — never through a text box or the middle of a panel."
+        )
+        self.fb_btn.clicked.connect(self._export_fb)
+        col.addWidget(self.fb_btn)
+        self.fb_all_btn = QPushButton("✂️ FB panels (ALL canvases)")
+        self.fb_all_btn.clicked.connect(self._export_fb_all)
+        col.addWidget(self.fb_all_btn)
+
         save = QPushButton("Save project")
         save.clicked.connect(self._save)
         col.addWidget(save)
@@ -747,6 +759,54 @@ class TypesetEditor(QWidget):
             self._render(seg).save(out)
             done.append(out)
         QMessageBox.information(self, "Exported all", "\n".join(done))
+
+    # -- Facebook panel split ------------------------------------------
+    @staticmethod
+    def _qimage_to_bgr(img: QImage):
+        """QImage -> contiguous H×W×3 BGR uint8 array for OpenCV."""
+        import numpy as np
+
+        img = img.convertToFormat(QImage.Format_RGB888)
+        w, h, bpl = img.width(), img.height(), img.bytesPerLine()
+        buf = np.frombuffer(img.constBits(), np.uint8, count=bpl * h)
+        rgb = buf.reshape(h, bpl)[:, : w * 3].reshape(h, w, 3)
+        return rgb[:, :, ::-1].copy()  # RGB -> BGR
+
+    def _split_segment(self, seg) -> list[str]:
+        """Render the current canvas and cut it into FB panels at safe seams.
+        Text-box rects are passed as forbidden zones so no line is ever sliced."""
+        from . import splitter
+
+        bgr = self._qimage_to_bgr(self._render(seg))
+        protect = [(it.y(), it.y() + it.h) for it in self.items]
+        slices = splitter.split_panels(bgr, protect=protect)
+        out_dir = os.path.join(self.base, "fb_panels")
+        prefix = os.path.splitext(seg["image"])[0]  # canvas_001 -> canvas_001_NNN
+        return splitter.write_panels(bgr, slices, out_dir, prefix=prefix)
+
+    def _export_fb(self):
+        paths = self._split_segment(self.segments[self.seg_idx])
+        if not paths:
+            QMessageBox.warning(self, "No panels", "Nothing to split.")
+            return
+        QMessageBox.information(
+            self, "Facebook panels",
+            f"{len(paths)} panel(s) →\n{os.path.dirname(paths[0])}",
+        )
+
+    def _export_fb_all(self):
+        self._commit_items()
+        total, folder = 0, None
+        for i, seg in enumerate(self.segments):
+            self._load_segment(i)
+            paths = self._split_segment(seg)
+            total += len(paths)
+            if paths:
+                folder = os.path.dirname(paths[0])
+        QMessageBox.information(
+            self, "Facebook panels",
+            f"{total} panel(s) across {len(self.segments)} canvas(es)\n→ {folder}",
+        )
 
     def _save(self):
         self._commit_items()
