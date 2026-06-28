@@ -670,7 +670,8 @@ class TypesetEditor(QWidget):
         root.addWidget(self.view, 4)
 
         root.addWidget(self._build_panel(), 0)
-        self._load_segment(0)
+        self._load_project()  # offer to resume a saved project (sets seg_idx etc.)
+        self._load_segment(self.seg_idx)
 
     # -- side panel ----------------------------------------------------
     @staticmethod
@@ -920,12 +921,17 @@ class TypesetEditor(QWidget):
     # -- segment handling ----------------------------------------------
     def _commit_items(self):
         if self.segments:
-            self.segments[self.seg_idx]["_state"] = (
+            seg = self.segments[self.seg_idx]
+            seg["_state"] = (
                 [it.to_dict() for it in self.items]
                 + [im.to_dict() for im in self.images]
             )
-            if self._work_np is not None:
-                self.segments[self.seg_idx]["_work_np"] = self._work_np
+            # keep the painted canvas only when it actually differs from the art
+            if (self._work_np is not None and self._orig_np is not None
+                    and not np.array_equal(self._work_np, self._orig_np)):
+                seg["_work_np"] = self._work_np
+            else:
+                seg.pop("_work_np", None)
 
     def _go(self, d):
         self._commit_items()
@@ -1768,17 +1774,62 @@ class TypesetEditor(QWidget):
 
     def _save(self):
         self._commit_items()
+        segs = []
+        for s in self.segments:
+            entry = {"image": s["image"], "state": s.get("_state", [])}
+            work = s.get("_work_np")  # painted / watermark-removed canvas
+            if work is not None:
+                wname = os.path.splitext(s["image"])[0] + "_work.png"
+                cv2.imwrite(os.path.join(self.base, wname), work)
+                entry["work"] = wname
+            segs.append(entry)
         proj = {
             "layout": os.path.basename(self.layout_path),
-            "segments": [
-                {"image": s["image"], "state": s.get("_state", [])}
-                for s in self.segments
-            ],
+            "seg_idx": self.seg_idx,
+            "post_groups": [list(g) for g in self._post_groups],
+            "segments": segs,
         }
         path = os.path.join(self.base, "typeset_project.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(proj, f, ensure_ascii=False, indent=2)
-        QMessageBox.information(self, "Saved", path)
+        QMessageBox.information(
+            self, "Saved",
+            f"Project saved →\n{path}\n\nReopen this chapter's layout.json later "
+            "to resume exactly where you left off.")
+
+    def _load_project(self):
+        """If a saved project exists for this chapter, offer to resume it —
+        restoring text, images, paint/removal edits, story grouping and the
+        canvas you were on."""
+        path = os.path.join(self.base, "typeset_project.json")
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                proj = json.load(f)
+        except Exception:
+            return
+        if QMessageBox.question(
+                self, "Resume project?",
+                "A saved project was found for this chapter.\n"
+                "Resume where you left off?") != QMessageBox.Yes:
+            return
+        by_image = {s.get("image"): s for s in proj.get("segments", [])}
+        for seg in self.segments:
+            sp = by_image.get(seg["image"])
+            if not sp:
+                continue
+            if sp.get("state"):
+                seg["_state"] = sp["state"]
+            if sp.get("work"):
+                wp = os.path.join(self.base, sp["work"])
+                arr = cv2.imread(wp) if os.path.exists(wp) else None
+                if arr is not None:
+                    seg["_work_np"] = arr
+        self._post_groups = [tuple(g) for g in proj.get("post_groups", [])]
+        if self.segments:
+            self.seg_idx = min(max(0, int(proj.get("seg_idx", 0))),
+                               len(self.segments) - 1)
 
 
 def main():
