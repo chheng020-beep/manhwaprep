@@ -94,50 +94,6 @@ def _acquire_url(source, work, status, on_progress, control):
     raise RuntimeError("No chapter images found by any download backend.")
 
 
-def _translate_pages(pages, out_dir, name, lang, ckpt, status, on_progress):
-    """OCR each raw page (script-aware), translate dialogue, write the sheet.
-
-    Dialogue (the chosen language) → NLLB. SFX (the other script, e.g. Korean on
-    an English scan) is NOT translated — it's left as-is or glossary-looked-up.
-    """
-    import cv2
-
-    from . import sheet
-    from .glossary import load_glossary, lookup_sfx
-    from .ocr import SourceOCR
-    from .translate import KhmerTranslator
-
-    status(f"Translating ({lang}→khm) — loading OCR + NLLB…")
-    ocr = SourceOCR(lang)
-    translator = KhmerTranslator(lang)
-    glossary = load_glossary()
-
-    tpages = []
-    for i, p in enumerate(pages, 1):
-        ckpt()
-        img = cv2.imread(p)
-        if img is None:
-            continue
-        bubbles = ocr.read_page(img)
-        dialogue = [b for b in bubbles if b["kind"] == "dialogue"]
-        khms = translator.translate([b["text"] for b in dialogue]) if dialogue else []
-        di = 0
-        for j, b in enumerate(bubbles, 1):
-            b["n"] = j
-            b["src"] = b.pop("text")
-            if b["kind"] == "dialogue":
-                b["khm"] = khms[di]
-                di += 1
-            else:  # sfx — glossary lookup or leave as-is
-                b["khm"] = lookup_sfx(b["src"], glossary) or ""
-        tpages.append({"page": i, "img": img, "bubbles": bubbles})
-        if on_progress:
-            on_progress("translate", i, len(pages))
-
-    json_path = sheet.write_translation(out_dir, name, lang, tpages)
-    status(f"Translation sheet → {json_path}")
-
-
 def _transcript_pages(pages, out_dir, name, lang, ckpt, status, on_progress):
     """OCR every bubble/SFX and write a numbered transcript (+ overlays) for
     translating in Claude. No machine translation, no cleaning."""
@@ -174,7 +130,6 @@ def run(
     clean: bool = True,
     inpaint: str = "migan",
     keep_sfx: bool = False,
-    translate: str | None = None,
     transcript: str | None = None,
     typeset: str | None = None,
     cleaner: TextCleaner | None = None,
@@ -188,11 +143,10 @@ def run(
     clean       : if False, skip text erasure (download + stitch only)
     inpaint     : "migan" (fast+good) | "lama" (best, slow) | "telea" (fastest)
     keep_sfx    : if True, erase only speech bubbles and keep SFX/action text
-    translate   : None | "ko" | "en" — write a Khmer translation sheet
     control     : optional Control for cooperative pause/stop
     on_status   : callable(str) for human-readable progress lines
     on_progress : callable(stage, done, total) where stage in
-                  {"download","translate","clean","stitch"}
+                  {"download","transcript","clean","stitch"}
     Returns (output_dir, list_of_output_paths).
     """
 
@@ -243,12 +197,6 @@ def run(
         if not clean:  # transcript-only run: done, nothing to stitch
             status(f"Done — transcript in {out_dir}")
             return out_dir, [paths["md"]]
-
-    # 2b. translate (optional) — reads the raw, text-bearing pages
-    if translate:
-        _translate_pages(
-            pages, out_dir, name, translate, ckpt, status, on_progress
-        )
 
     # 3. clean each page (optional)
     if clean:

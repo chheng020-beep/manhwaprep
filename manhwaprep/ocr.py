@@ -7,7 +7,7 @@ A single-language OCR pass mangles both, so we:
   3. classify by script, and route:
        - regions matching the chosen dialogue language -> kind "dialogue"
        - the other script (e.g. Korean SFX on an English scan) -> kind "sfx"
-Dialogue is translated downstream; SFX is left as-is (or glossary-looked-up).
+The transcript export feeds this text to Claude for translation.
 
 Reuses the detection + recognition models that ship with EasyScanlate.
 """
@@ -82,7 +82,7 @@ class SourceOCR:
     def __init__(self, lang: str = "en"):
         if lang not in REC_MODELS:
             raise ValueError(f"Unsupported OCR language: {lang}")
-        self.lang = lang  # the dialogue language to translate
+        self.lang = lang  # the dialogue language to read
         self._det = RapidOCR(
             params={
                 "Det.engine_type": EngineType.ONNXRUNTIME,

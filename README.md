@@ -16,45 +16,30 @@ detection model and the Telea inpaint, decoupled from the Qt app.
 ~/ManhwaPrep/run.sh ~/folder --segments 6        # ~6 long images instead of 5
 ~/ManhwaPrep/run.sh "<url>" --inpaint lama        # best quality (slow); default is migan
 ~/ManhwaPrep/run.sh "<url>" --keep-sfx           # erase speech bubbles only, keep SFX
-~/ManhwaPrep/run.sh "<url>" --translate ko       # also write a Khmer translation sheet
+~/ManhwaPrep/run.sh "<url>" --transcript en      # pull a numbered transcript for Claude
+~/ManhwaPrep/run.sh "<url>" --typeset en         # clean + long canvas + native Khmer editor
 ```
 
-In the **GUI** you also get: a **Keep SFX** checkbox, a **Translate to Khmer**
-dropdown (Off / Korean / English), an **Open translation editor** button, and
-**Pause / Stop** buttons (they take effect at the next page boundary).
+In the **GUI** you also get: a **Keep SFX** checkbox, a **Transcript (for
+Claude)** dropdown, a **Typeset Khmer (native)** dropdown with an **Open typeset
+editor…** button, and **Pause / Stop** buttons (they take effect at the next
+page boundary).
 
-## Khmer translation (optional, off by default)
+## Khmer workflow (transcript → Claude → native typeset)
 
-**English base is best** — NLLB's strongest Khmer direction is `eng_Latn→khm`,
-so prefer English scanlations over Korean raws and use `--translate en`.
+Translation is done **in Claude**, not by a local model. The flow:
 
-The translate step is **script-aware**: it reads each region with both the
-English and Korean recognizers and routes by script — English dialogue is
-translated, while Korean SFX is left as-is (or looked up in the SFX glossary),
-because onomatopoeia mangles through MT. Dialogue lines are grouped per bubble.
-
-Korean→Khmer SFX glossary: starter set in `glossary.py`; extend it by editing
-`~/ManhwaPrep/sfx_glossary.json` (merged over the defaults).
-
-When enabled, ManhwaPrep OCRs each bubble, translates dialogue to Khmer offline
-with **NLLB-200** (CTranslate2), and writes a **translation sheet** — it does
-NOT burn text onto the page. Outputs land in the chapter's output folder:
-
-- `translation.json` — the editable data (source of truth)
-- `translation.md` — readable sheet (page · bubble # · original → Khmer)
-- `_translate/overlays/NNN.png` — pages with numbered bubbles
-
-Edit the rough machine Khmer in the **side-by-side editor**, then typeset in
-EasyScanlate:
-```bash
-~/EasyScanlate/.venv/bin/python -m manhwaprep.editor   # pick a translation.json
-```
-Left = page with numbered bubbles; right = editable original/Khmer rows; Save
-writes back to `translation.json`.
-
-Setup (one-time): needs `ctranslate2 transformers sentencepiece huggingface_hub`
-in the venv and the NLLB CT2 model at `models/nllb-600m-ct2/`. The Khmer is
-rough (NLLB's limit) — it's a draft to refine in the editor.
+1. **Transcript** (`--transcript en`) — OCRs every bubble/SFX (script-aware:
+   English dialogue vs. Korean SFX) and writes a **numbered transcript** plus
+   overlays with numbered boxes. Outputs in the chapter's output folder:
+   - `transcript.md` — readable sheet (page · # · original text)
+   - overlays — pages with numbered bubbles, so you can match line to box
+2. **Translate in Claude** — paste the numbered list; Claude returns the Khmer,
+   numbered to match.
+3. **Typeset** (`--typeset en`) — cleans the pages, stitches them into a few long
+   canvases, and opens the **native Khmer editor**. Use **2️⃣ Paste Khmer list…**
+   to drop Claude's numbered Khmer onto the matching boxes, then position, style,
+   and **Export** — no Photoshop, no local NLLB model.
 
 ## Cleaning quality (3 repaint engines)
 
@@ -103,8 +88,8 @@ You paste the live chapter URL either way. Headless needs a one-time setup:
 
 ## Windows build (.exe via GitHub Actions)
 
-The Windows **core cleaner** build (download → clean → stitch; no Khmer
-translation, no headless browser) is produced in the cloud — no Windows PC needed:
+The Windows **core cleaner** build (download → clean → stitch; no transcript/
+typeset OCR, no headless browser) is produced in the cloud — no Windows PC needed:
 
 1. Create an empty repo on GitHub (e.g. `manhwaprep`).
 2. Push this project:
@@ -123,8 +108,9 @@ The `.exe` ships **without models** (keeps it small). On first launch it shows a
 setup window and downloads the core models (RT-DETR + MI-GAN, ~72 MB) into
 `%LOCALAPPDATA%\ManhwaPrep\models`. Output → `%USERPROFILE%\ManhwaPrep\output`.
 
-Not in the Windows core build: Khmer translation (NLLB) and the headless-browser
-downloader (JS/bot-protected sites like nuviatoon) — use the macOS app for those.
+Not in the Windows core build: the transcript/typeset OCR stack and the
+headless-browser downloader (JS/bot-protected sites like nuviatoon) — use the
+macOS app for those.
 
 ## What each piece does
 

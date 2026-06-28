@@ -20,7 +20,7 @@ a = Analysis(
     ] + ort_hidden,
     hookspath=[],
     runtime_hooks=[],
-    # keep the build lean: translation + OCR-fallback + headless stacks are out
+    # keep the build lean: OCR + headless + unused ML stacks are out
     excludes=[
         "rapidocr", "ctranslate2", "transformers", "torch", "sentencepiece",
         "playwright", "tkinter", "matplotlib", "scipy", "pandas", "PyQt5",

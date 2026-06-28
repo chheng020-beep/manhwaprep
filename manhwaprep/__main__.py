@@ -39,11 +39,6 @@ def main():
         help="erase only speech bubbles; keep SFX / action text",
     )
     ap.add_argument(
-        "--translate",
-        choices=["ko", "en"],
-        help="also write a Khmer translation sheet from this source language",
-    )
-    ap.add_argument(
         "--transcript",
         choices=["ko", "en"],
         help="export a numbered transcript (+ overlays) for translating in Claude",
@@ -71,7 +66,6 @@ def main():
         clean=not args.no_clean,
         inpaint="telea" if args.fast else args.inpaint,
         keep_sfx=args.keep_sfx,
-        translate=args.translate,
         transcript=args.transcript,
         typeset=args.typeset,
         on_status=lambda m: print(m, flush=True),

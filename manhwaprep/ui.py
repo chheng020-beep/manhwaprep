@@ -33,18 +33,8 @@ from .engine import TextCleaner
 from .pipeline import run
 
 
-def _translation_available() -> bool:
-    """The translate feature needs CTranslate2; the Windows core build omits it."""
-    try:
-        import ctranslate2  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
 def _ocr_available() -> bool:
-    """Transcript/translate OCR needs rapidocr; the Windows core build omits it."""
+    """Transcript/typeset OCR needs rapidocr; the Windows core build omits it."""
     try:
         import rapidocr  # noqa: F401
 
@@ -67,7 +57,6 @@ class Worker(QObject):
         clean: bool,
         inpaint: str,
         keep_sfx: bool,
-        translate,
         transcript,
         typeset,
         control,
@@ -78,7 +67,6 @@ class Worker(QObject):
         self.clean = clean
         self.inpaint = inpaint
         self.keep_sfx = keep_sfx
-        self.translate = translate
         self.transcript = transcript
         self.typeset = typeset
         self.control = control
@@ -101,7 +89,6 @@ class Worker(QObject):
                 clean=self.clean,
                 inpaint=self.inpaint,
                 keep_sfx=self.keep_sfx,
-                translate=self.translate,
                 transcript=self.transcript,
                 typeset=self.typeset,
                 cleaner=cleaner,
@@ -228,23 +215,6 @@ class MainWindow(QWidget):
         # These only matter when removing text.
         self.remove_text.toggled.connect(self.quality.setEnabled)
         self.remove_text.toggled.connect(self.keep_sfx.setEnabled)
-
-        # translate row — only when the translation backend is installed
-        # (the Windows "core cleaner" build ships without it).
-        self.translate = None
-        if _translation_available():
-            tr_row = QHBoxLayout()
-            tr_row.addWidget(QLabel("Translate to Khmer:"))
-            self.translate = QComboBox()
-            self.translate.addItem("Off", None)
-            self.translate.addItem("from Korean", "ko")
-            self.translate.addItem("from English", "en")
-            tr_row.addWidget(self.translate)
-            tr_row.addStretch(1)
-            self.edit_btn = QPushButton("Open translation editor")
-            self.edit_btn.clicked.connect(self._open_editor)
-            tr_row.addWidget(self.edit_btn)
-            root.addLayout(tr_row)
 
         # transcript row — export numbered text for translating in Claude
         self.transcript = None
@@ -377,7 +347,6 @@ class MainWindow(QWidget):
             self.remove_text.isChecked(),
             self.quality.currentData(),
             self.keep_sfx.isChecked(),
-            self.translate.currentData() if self.translate else None,
             self.transcript.currentData() if self.transcript else None,
             self.typeset.currentData() if self.typeset else None,
             self._control,
@@ -411,19 +380,6 @@ class MainWindow(QWidget):
         self._append("Stopping after the current page…")
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
-
-    def _open_editor(self):
-        from .editor import EditorWindow
-
-        start = self._last_out or os.path.expanduser("~/ManhwaPrep/output")
-        cand = os.path.join(start, "translation.json") if self._last_out else ""
-        if not (cand and os.path.exists(cand)):
-            cand, _ = QFileDialog.getOpenFileName(
-                self, "Open translation.json", start, "Translation (translation.json)"
-            )
-        if cand and os.path.exists(cand):
-            self._editor = EditorWindow(cand)
-            self._editor.show()
 
     # -- signals -------------------------------------------------------
     @staticmethod
