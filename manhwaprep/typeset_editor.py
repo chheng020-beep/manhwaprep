@@ -37,11 +37,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QButtonGroup,
     QFontComboBox,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -49,8 +53,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -440,9 +446,11 @@ class _CanvasView(QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setMouseTracking(True)  # hover events even with no button down
         self.tool = "select"
         self.editor = None
         self._painting = False
+        self._brush_pt = None  # scene pos of the brush-size preview ring
 
     def _xy(self, e):
         p = self.mapToScene(e.position().toPoint())
@@ -457,11 +465,31 @@ class _CanvasView(QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self.tool != "select":  # show the brush footprint under the cursor
+            self._brush_pt = self.mapToScene(e.position().toPoint())
+            self.viewport().update()
         if self._painting and self.editor:
             self.editor._paint_move(*self._xy(e))
             e.accept()
             return
         super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._brush_pt = None
+        self.viewport().update()
+        super().leaveEvent(e)
+
+    def drawForeground(self, p, rect):
+        super().drawForeground(p, rect)
+        if self.tool == "select" or self._brush_pt is None or not self.editor:
+            return
+        r = self.editor._brush_size / 2.0
+        pen = QPen(QColor(0, 0, 0)); pen.setCosmetic(True)
+        p.setPen(pen); p.setBrush(Qt.NoBrush)
+        p.drawEllipse(self._brush_pt, r, r)
+        pen2 = QPen(QColor(255, 255, 255)); pen2.setCosmetic(True)
+        pen2.setStyle(Qt.DashLine); p.setPen(pen2)
+        p.drawEllipse(self._brush_pt, r, r)
 
     def mouseReleaseEvent(self, e):
         if self._painting:
@@ -572,16 +600,40 @@ class TypesetEditor(QWidget):
         self.scene.selectionChanged.connect(self._sync_panel)
         root.addWidget(self.view, 4)
 
-        root.addLayout(self._build_panel(), 0)
+        root.addWidget(self._build_panel(), 0)
         self._load_segment(0)
 
     # -- side panel ----------------------------------------------------
+    @staticmethod
+    def _hline():
+        ln = QFrame()
+        ln.setFrameShape(QFrame.HLine)
+        ln.setStyleSheet("color:#ddd;")
+        return ln
+
+    def _tool_button(self, glyph, name, tip):
+        b = QToolButton()
+        b.setText(glyph)
+        b.setCheckable(True)
+        b.setToolTip(tip)
+        b.setFixedSize(42, 38)
+        b.setStyleSheet("QToolButton{font-size:18px;border:1px solid #ccc;"
+                        "border-radius:6px;}"
+                        "QToolButton:checked{background:#2d7ff9;color:white;"
+                        "border:1px solid #2d7ff9;}")
+        b.clicked.connect(lambda: self._select_tool(name))
+        self._tool_group.addButton(b)
+        self._tool_buttons[name] = b
+        return b
+
     def _build_panel(self):
         col = QVBoxLayout()
+        col.setSpacing(8)
 
+        # canvas navigation
         nav = QHBoxLayout()
-        self.prev = QPushButton("‹")
-        self.next = QPushButton("›")
+        self.prev = QToolButton(); self.prev.setText("‹"); self.prev.setFixedWidth(34)
+        self.next = QToolButton(); self.next.setText("›"); self.next.setFixedWidth(34)
         self.prev.clicked.connect(lambda: self._go(-1))
         self.next.clicked.connect(lambda: self._go(1))
         self.seg_lbl = QLabel("")
@@ -590,104 +642,82 @@ class TypesetEditor(QWidget):
         nav.addWidget(self.next)
         col.addLayout(nav)
 
-        self.copy_btn = QPushButton("1️⃣ Copy text for Claude")
-        self.copy_btn.clicked.connect(self._copy_for_claude)
-        col.addWidget(self.copy_btn)
-
-        self.paste_btn = QPushButton("2️⃣ Paste Khmer list…")
-        self.paste_btn.clicked.connect(self._paste)
-        col.addWidget(self.paste_btn)
-
-        addrow = QHBoxLayout()
-        add_btn = QPushButton("➕ Add box")
-        add_btn.clicked.connect(self._add_box)
-        del_btn = QPushButton("🗑 Delete")
-        del_btn.clicked.connect(self._delete_selected)
-        addrow.addWidget(add_btn)
-        addrow.addWidget(del_btn)
-        col.addLayout(addrow)
-
-        img_btn = QPushButton("🖼 Add image (SFX / sticker)…")
-        img_btn.setToolTip("Add an image, or just press Ctrl+V to paste one")
-        img_btn.clicked.connect(self._add_image)
-        col.addWidget(img_btn)
-
-        # SFX library: upload once, click a thumbnail to drop it on the canvas.
-        col.addWidget(QLabel("SFX library — click to place:"))
-        self.lib = QListWidget()
-        self.lib.setViewMode(QListWidget.IconMode)
-        self.lib.setIconSize(QSize(56, 56))
-        self.lib.setResizeMode(QListWidget.Adjust)
-        self.lib.setMovement(QListWidget.Static)
-        self.lib.setSpacing(4)
-        self.lib.setFixedHeight(150)
-        self.lib.itemClicked.connect(self._lib_clicked)
-        col.addWidget(self.lib)
-        lib_up = QPushButton("⬆ Upload SFX to library…")
-        lib_up.clicked.connect(self._upload_sfx)
-        col.addWidget(lib_up)
-        self._refresh_library()
-
-        # Touch-up tools (paint over the cleaned art) + undo/redo.
-        urow = QHBoxLayout()
-        self.undo_btn = QPushButton("↶ Undo")
+        # tool toolbar (icons, not a dropdown) + undo/redo
+        self._tool_group = QButtonGroup(self)
+        self._tool_group.setExclusive(True)
+        self._tool_buttons = {}
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        bar.addWidget(self._tool_button("⤢", "select", "Select / move (V)"))
+        bar.addWidget(self._tool_button("💧", "blend", "Blend / smudge"))
+        bar.addWidget(self._tool_button("🧽", "erase", "Erase — restores original art"))
+        bar.addWidget(self._tool_button("🖌", "paint", "Paint a colour"))
+        bar.addStretch(1)
+        self.undo_btn = QToolButton(); self.undo_btn.setText("↶")
+        self.undo_btn.setFixedSize(38, 38); self.undo_btn.setToolTip("Undo (⌘Z)")
         self.undo_btn.clicked.connect(self._undo)
-        self.redo_btn = QPushButton("↷ Redo")
+        self.redo_btn = QToolButton(); self.redo_btn.setText("↷")
+        self.redo_btn.setFixedSize(38, 38); self.redo_btn.setToolTip("Redo (⇧⌘Z)")
         self.redo_btn.clicked.connect(self._redo)
-        urow.addWidget(self.undo_btn)
-        urow.addWidget(self.redo_btn)
-        col.addLayout(urow)
+        bar.addWidget(self.undo_btn)
+        bar.addWidget(self.redo_btn)
+        col.addLayout(bar)
+        self._tool_buttons["select"].setChecked(True)
 
-        trow = QHBoxLayout()
-        trow.addWidget(QLabel("Tool"))
-        self.tool_combo = QComboBox()
-        self.tool_combo.addItem("Select / move", "select")
-        self.tool_combo.addItem("Blend (smudge)", "blend")
-        self.tool_combo.addItem("Erase (undo strokes)", "erase")
-        self.tool_combo.addItem("Paint (colour)", "paint")
-        self.tool_combo.currentIndexChanged.connect(self._tool_changed)
-        trow.addWidget(self.tool_combo, 1)
-        col.addLayout(trow)
-
+        # brush group — only visible while a paint tool is active
+        self.brush_group = QGroupBox("Brush")
+        bg = QVBoxLayout(self.brush_group)
         brow = QHBoxLayout()
-        brow.addWidget(QLabel("Brush"))
+        brow.addWidget(QLabel("Size"))
         self.brush_spin = QSpinBox()
         self.brush_spin.setRange(3, 400)
+        self.brush_spin.setSuffix(" px")
         self.brush_spin.setValue(self._brush_size)
         self.brush_spin.valueChanged.connect(self._brush_changed)
         brow.addWidget(self.brush_spin, 1)
-        self.paint_color_btn = QPushButton("Paint colour")
+        self.paint_color_btn = QPushButton("Colour")
         self.paint_color_btn.clicked.connect(self._pick_paint_color)
         brow.addWidget(self.paint_color_btn)
-        col.addLayout(brow)
+        bg.addLayout(brow)
+        self.brush_group.setVisible(False)
+        col.addWidget(self.brush_group)
 
-        col.addWidget(QLabel("Selected text:"))
+        # text group — only visible when a text box is selected
+        self.text_group = QGroupBox("Text")
+        tg = QVBoxLayout(self.text_group)
         self.text_edit = QPlainTextEdit()
-        self.text_edit.setFixedHeight(80)
+        self.text_edit.setFixedHeight(70)
         self.text_edit.setFont(QFont(KHMER_FONT, 15))
         self.text_edit.textChanged.connect(self._text_changed)
-        col.addWidget(self.text_edit)
-
+        tg.addWidget(self.text_edit)
         self.fontbox = QFontComboBox()
         self.fontbox.setCurrentFont(QFont(KHMER_FONT))
         self.fontbox.currentFontChanged.connect(self._font_changed)
-        col.addWidget(self.fontbox)
-
+        tg.addWidget(self.fontbox)
         srow = QHBoxLayout()
         srow.addWidget(QLabel("Size"))
-        self.size = QSpinBox()
-        self.size.setRange(6, 400)
-        self.size.setValue(24)
+        self.size = QSpinBox(); self.size.setRange(6, 400); self.size.setValue(24)
         self.size.valueChanged.connect(self._size_changed)
         srow.addWidget(self.size)
         srow.addWidget(QLabel("Outline"))
-        self.ow = QSpinBox()
-        self.ow.setRange(0, 12)
-        self.ow.setValue(3)
+        self.ow = QSpinBox(); self.ow.setRange(0, 12); self.ow.setValue(3)
         self.ow.valueChanged.connect(self._ow_changed)
         srow.addWidget(self.ow)
-        col.addLayout(srow)
-
+        tg.addLayout(srow)
+        frow = QHBoxLayout()
+        self.bold_btn = self._fmt_toggle("B", "font-weight:bold;", self._toggle_bold)
+        self.italic_btn = self._fmt_toggle("I", "font-style:italic;", self._toggle_italic)
+        self.underline_btn = self._fmt_toggle(
+            "U", "text-decoration:underline;", self._toggle_underline)
+        frow.addWidget(self.bold_btn)
+        frow.addWidget(self.italic_btn)
+        frow.addWidget(self.underline_btn)
+        self.align_combo = QComboBox()
+        self.align_combo.addItems(["⬅ Left", "⬌ Center", "➡ Right"])
+        self.align_combo.setCurrentIndex(1)
+        self.align_combo.currentIndexChanged.connect(self._align_changed)
+        frow.addWidget(self.align_combo, 1)
+        tg.addLayout(frow)
         crow = QHBoxLayout()
         self.fill_btn = QPushButton("Text colour")
         self.fill_btn.clicked.connect(self._pick_fill)
@@ -695,73 +725,94 @@ class TypesetEditor(QWidget):
         self.outline_btn.clicked.connect(self._pick_outline)
         crow.addWidget(self.fill_btn)
         crow.addWidget(self.outline_btn)
-        col.addLayout(crow)
-
-        fmt = QHBoxLayout()
-        self.bold_btn = QPushButton("B")
-        self.bold_btn.setCheckable(True)
-        self.bold_btn.setFixedWidth(32)
-        self.bold_btn.setStyleSheet("font-weight:bold;")
-        self.italic_btn = QPushButton("I")
-        self.italic_btn.setCheckable(True)
-        self.italic_btn.setFixedWidth(32)
-        self.italic_btn.setStyleSheet("font-style:italic;")
-        self.underline_btn = QPushButton("U")
-        self.underline_btn.setCheckable(True)
-        self.underline_btn.setFixedWidth(32)
-        self.underline_btn.setStyleSheet("text-decoration:underline;")
-        self.bold_btn.clicked.connect(self._toggle_bold)
-        self.italic_btn.clicked.connect(self._toggle_italic)
-        self.underline_btn.clicked.connect(self._toggle_underline)
-        fmt.addWidget(self.bold_btn)
-        fmt.addWidget(self.italic_btn)
-        fmt.addWidget(self.underline_btn)
-        self.align_combo = QComboBox()
-        self.align_combo.addItems(["⬅ Left", "⬌ Center", "➡ Right"])
-        self.align_combo.setCurrentIndex(1)
-        self.align_combo.currentIndexChanged.connect(self._align_changed)
-        fmt.addWidget(self.align_combo)
-        col.addLayout(fmt)
-
+        tg.addLayout(crow)
         rrow = QHBoxLayout()
         rrow.addWidget(QLabel("Rotate"))
-        self.rot = QSpinBox()
-        self.rot.setRange(-180, 180)
-        self.rot.setSuffix("°")
+        self.rot = QSpinBox(); self.rot.setRange(-180, 180); self.rot.setSuffix("°")
         self.rot.valueChanged.connect(self._rot_changed)
         rrow.addWidget(self.rot)
         rrow.addStretch(1)
-        col.addLayout(rrow)
+        tg.addLayout(rrow)
+        self.text_group.setVisible(False)
+        col.addWidget(self.text_group)
 
-        col.addStretch(1)
-        self.export_btn = QPushButton("💾 Export this canvas (PNG)")
+        # insert / Khmer workflow
+        ins = QGroupBox("Insert")
+        ig = QVBoxLayout(ins)
+        arow = QHBoxLayout()
+        add_btn = QPushButton("➕ Text box"); add_btn.clicked.connect(self._add_box)
+        del_btn = QPushButton("🗑 Delete"); del_btn.clicked.connect(self._delete_selected)
+        arow.addWidget(add_btn); arow.addWidget(del_btn)
+        ig.addLayout(arow)
+        img_btn = QPushButton("🖼 Add image  (or ⌘V)")
+        img_btn.clicked.connect(self._add_image)
+        ig.addWidget(img_btn)
+        krow = QHBoxLayout()
+        self.copy_btn = QPushButton("1️⃣ Copy for Claude")
+        self.copy_btn.clicked.connect(self._copy_for_claude)
+        self.paste_btn = QPushButton("2️⃣ Paste Khmer")
+        self.paste_btn.clicked.connect(self._paste)
+        krow.addWidget(self.copy_btn); krow.addWidget(self.paste_btn)
+        ig.addLayout(krow)
+        ig.addWidget(QLabel("SFX library — click to place:"))
+        self.lib = QListWidget()
+        self.lib.setViewMode(QListWidget.IconMode)
+        self.lib.setIconSize(QSize(52, 52))
+        self.lib.setResizeMode(QListWidget.Adjust)
+        self.lib.setMovement(QListWidget.Static)
+        self.lib.setSpacing(4)
+        self.lib.setFixedHeight(120)
+        self.lib.itemClicked.connect(self._lib_clicked)
+        ig.addWidget(self.lib)
+        lib_up = QPushButton("⬆ Upload SFX…")
+        lib_up.clicked.connect(self._upload_sfx)
+        ig.addWidget(lib_up)
+        self._refresh_library()
+        col.addWidget(ins)
+
+        # export
+        exp = QGroupBox("Export")
+        eg = QVBoxLayout(exp)
+        self.export_btn = QPushButton("💾 Export this canvas")
         self.export_btn.clicked.connect(self._export)
-        col.addWidget(self.export_btn)
+        eg.addWidget(self.export_btn)
         self.export_all_btn = QPushButton("Export ALL canvases")
         self.export_all_btn.clicked.connect(self._export_all)
-        col.addWidget(self.export_all_btn)
-
-        self.fb_btn = QPushButton("✂️ FB panels (this canvas)")
+        eg.addWidget(self.export_all_btn)
+        fbrow = QHBoxLayout()
+        self.fb_btn = QPushButton("✂️ FB panels")
         self.fb_btn.setToolTip(
             "Slice this canvas into Facebook-sized panels, cutting only at safe "
-            "gutters — never through a text box or the middle of a panel."
-        )
+            "gutters — never through a text box or the middle of a panel.")
         self.fb_btn.clicked.connect(self._export_fb)
-        col.addWidget(self.fb_btn)
-        self.fb_all_btn = QPushButton("✂️ FB panels (ALL canvases)")
+        self.fb_all_btn = QPushButton("✂️ FB (all)")
         self.fb_all_btn.clicked.connect(self._export_fb_all)
-        col.addWidget(self.fb_all_btn)
-
+        fbrow.addWidget(self.fb_btn); fbrow.addWidget(self.fb_all_btn)
+        eg.addLayout(fbrow)
         save = QPushButton("Save project")
         save.clicked.connect(self._save)
-        col.addWidget(save)
+        eg.addWidget(save)
+        col.addWidget(exp)
 
-        wrap = QWidget()
-        wrap.setLayout(col)
-        wrap.setFixedWidth(300)
-        outer = QVBoxLayout()
-        outer.addWidget(wrap)
-        return outer
+        col.addStretch(1)
+
+        inner = QWidget()
+        inner.setLayout(col)
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(320)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        return scroll
+
+    def _fmt_toggle(self, label, style, slot):
+        b = QPushButton(label)
+        b.setCheckable(True)
+        b.setFixedWidth(32)
+        b.setStyleSheet(style)
+        b.clicked.connect(slot)
+        return b
 
     # -- segment handling ----------------------------------------------
     def _commit_items(self):
@@ -858,6 +909,7 @@ class TypesetEditor(QWidget):
 
     def _sync_panel(self):
         sel = self._selected()
+        self.text_group.setVisible(bool(sel))  # only show text controls in context
         if not sel:
             return
         it = sel[0]
@@ -940,6 +992,13 @@ class TypesetEditor(QWidget):
         proxy = self.scene.addWidget(te)
         proxy.setZValue(1000)
         proxy.setPos(item.x(), item.y())
+        # Halo in the outline colour so the text stays visible while typing even
+        # on a black panel (mirrors the box's final outline).
+        glow = QGraphicsDropShadowEffect()
+        glow.setOffset(0, 0)
+        glow.setBlurRadius(16)
+        glow.setColor(item.outline if item.outline else QColor(255, 255, 255))
+        proxy.setGraphicsEffect(glow)
         te.setFixedWidth(int(max(24, item.w)))  # same width → same wrapping
         item._editing = True  # stop the box drawing its own copy of the text
         item.update()
@@ -1084,18 +1143,26 @@ class TypesetEditor(QWidget):
             self._place_image(QPixmap(path))
 
     # -- touch-up painting (blend / erase / paint) ---------------------
-    def _tool_changed(self, _i):
-        self._tool = self.tool_combo.currentData()
-        self.view.tool = self._tool
-        # While painting, let clicks pass to the canvas rather than items.
+    def _select_tool(self, name):
+        self._tool = name
+        self.view.tool = name
+        if name in self._tool_buttons:
+            self._tool_buttons[name].setChecked(True)
+        painting = name != "select"
+        # While painting, clicks paint the canvas rather than moving items.
         for it in self.items + self.images:
-            it.setFlag(QGraphicsItem.ItemIsSelectable, self._tool == "select")
-            it.setFlag(QGraphicsItem.ItemIsMovable, self._tool == "select")
-        if self._tool != "select":
+            it.setFlag(QGraphicsItem.ItemIsSelectable, not painting)
+            it.setFlag(QGraphicsItem.ItemIsMovable, not painting)
+        if painting:
             self.scene.clearSelection()
+        self.brush_group.setVisible(painting)
+        self.paint_color_btn.setVisible(name == "paint")
+        self.view.setCursor(Qt.CrossCursor if painting else Qt.ArrowCursor)
+        self.view.viewport().update()
 
     def _brush_changed(self, v):
         self._brush_size = int(v)
+        self.view.viewport().update()  # resize the hover preview ring live
 
     def _pick_paint_color(self):
         c = QColorDialog.getColor(self._paint_color, self, "Paint colour")
