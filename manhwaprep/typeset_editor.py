@@ -1409,15 +1409,31 @@ class TypesetEditor(QWidget):
         if not km:
             QMessageBox.warning(self, "No lines", "No 'N. text' lines found.")
             return
+        # Box numbers are unique across the whole chapter, so fill EVERY canvas in
+        # one go — not just the one on screen — by visiting each segment, filling
+        # its matching boxes, and saving its state.
+        self._commit_items()
+        cur = self.seg_idx
         filled = 0
-        for it in self.items:
-            if it.n in km:
-                it.text = km[it.n]
-                it._refit()
-                it.update()
-                filled += 1
-        self._record_if_changed()
-        QMessageBox.information(self, "Filled", f"Filled {filled} text boxes.")
+        for i in range(len(self.segments)):
+            self.seg_idx = i  # so _commit_items writes the RIGHT canvas
+            self._load_segment(i)
+            hit = False
+            for it in self.items:
+                if it.n in km:
+                    it.text = km[it.n]
+                    it._refit()
+                    it.update()
+                    filled += 1
+                    hit = True
+            if hit:
+                self._commit_items()  # persist this canvas's Khmer
+        self.seg_idx = cur
+        self._load_segment(cur)  # return to where the user was
+        QMessageBox.information(
+            self, "Filled",
+            f"Filled {filled} text box(es) across {len(self.segments)} canvas(es).",
+        )
 
     # -- export / save -------------------------------------------------
     def _render(self, seg) -> QImage:
