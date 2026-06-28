@@ -14,6 +14,9 @@ import json
 import os
 import sys
 
+import cv2
+import numpy as np
+
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
@@ -297,6 +300,14 @@ def _b64_to_pixmap(s: str) -> QPixmap:
     return pix
 
 
+def _bgr_to_qpixmap(arr: np.ndarray) -> QPixmap:
+    """BGR uint8 array -> QPixmap (detached from the numpy buffer)."""
+    h, w = arr.shape[:2]
+    rgb = np.ascontiguousarray(arr[:, :, ::-1])
+    img = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+    return QPixmap.fromImage(img.copy())
+
+
 class ImageItem(QGraphicsItem):
     """A pasted / loaded image — an SFX or sticker. Move by dragging the body,
     resize FREELY via the 8 handles (stretch allowed), rotate. Composites over
@@ -422,11 +433,46 @@ class ImageItem(QGraphicsItem):
 
 
 class _CanvasView(QGraphicsView):
-    """Graphics view with Ctrl+wheel zoom (plain wheel scrolls)."""
+    """Graphics view with Ctrl+wheel zoom (plain wheel scrolls). In a paint tool
+    (blend / erase / paint) a left-drag paints onto the canvas instead of moving
+    items; in select mode it behaves normally."""
 
     def __init__(self, scene):
         super().__init__(scene)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.tool = "select"
+        self.editor = None
+        self._painting = False
+
+    def _xy(self, e):
+        p = self.mapToScene(e.position().toPoint())
+        return p.x(), p.y()
+
+    def mousePressEvent(self, e):
+        if self.tool != "select" and self.editor and e.button() == Qt.LeftButton:
+            self._painting = True
+            self.editor._paint_begin(*self._xy(e))
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._painting and self.editor:
+            self.editor._paint_move(*self._xy(e))
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._painting:
+            self._painting = False
+            if self.editor:
+                self.editor._paint_end()
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+        if self.tool == "select" and self.editor:
+            self.editor._record_if_changed()  # capture a move/resize for undo
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -503,6 +549,17 @@ class TypesetEditor(QWidget):
         self.images: list[ImageItem] = []
         self._inline_proxy = None
         self._inline_item = None
+        # touch-up painting (blend / erase / paint) + undo history
+        self._tool = "select"
+        self._brush_size = 28
+        self._paint_color = QColor(0, 0, 0)
+        self._orig_np = None   # pristine canvas (eraser restores from this)
+        self._work_np = None   # working canvas (edits are baked here)
+        self._bg_pixmap = None
+        self._bg_item = None
+        self._last_paint = None
+        self._history = []
+        self._hist_idx = -1
 
         self.setWindowTitle(f"Typeset — {self.layout.get('chapter', '')}")
         self.resize(1200, 860)
@@ -510,6 +567,7 @@ class TypesetEditor(QWidget):
 
         self.scene = QGraphicsScene()
         self.view = _CanvasView(self.scene)
+        self.view.editor = self
         self.view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.scene.selectionChanged.connect(self._sync_panel)
         root.addWidget(self.view, 4)
@@ -569,6 +627,39 @@ class TypesetEditor(QWidget):
         lib_up.clicked.connect(self._upload_sfx)
         col.addWidget(lib_up)
         self._refresh_library()
+
+        # Touch-up tools (paint over the cleaned art) + undo/redo.
+        urow = QHBoxLayout()
+        self.undo_btn = QPushButton("↶ Undo")
+        self.undo_btn.clicked.connect(self._undo)
+        self.redo_btn = QPushButton("↷ Redo")
+        self.redo_btn.clicked.connect(self._redo)
+        urow.addWidget(self.undo_btn)
+        urow.addWidget(self.redo_btn)
+        col.addLayout(urow)
+
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Tool"))
+        self.tool_combo = QComboBox()
+        self.tool_combo.addItem("Select / move", "select")
+        self.tool_combo.addItem("Blend (smudge)", "blend")
+        self.tool_combo.addItem("Erase (undo strokes)", "erase")
+        self.tool_combo.addItem("Paint (colour)", "paint")
+        self.tool_combo.currentIndexChanged.connect(self._tool_changed)
+        trow.addWidget(self.tool_combo, 1)
+        col.addLayout(trow)
+
+        brow = QHBoxLayout()
+        brow.addWidget(QLabel("Brush"))
+        self.brush_spin = QSpinBox()
+        self.brush_spin.setRange(3, 400)
+        self.brush_spin.setValue(self._brush_size)
+        self.brush_spin.valueChanged.connect(self._brush_changed)
+        brow.addWidget(self.brush_spin, 1)
+        self.paint_color_btn = QPushButton("Paint colour")
+        self.paint_color_btn.clicked.connect(self._pick_paint_color)
+        brow.addWidget(self.paint_color_btn)
+        col.addLayout(brow)
 
         col.addWidget(QLabel("Selected text:"))
         self.text_edit = QPlainTextEdit()
@@ -679,11 +770,51 @@ class TypesetEditor(QWidget):
                 [it.to_dict() for it in self.items]
                 + [im.to_dict() for im in self.images]
             )
+            if self._work_np is not None:
+                self.segments[self.seg_idx]["_work_np"] = self._work_np
 
     def _go(self, d):
         self._commit_items()
         self.seg_idx = max(0, min(len(self.segments) - 1, self.seg_idx + d))
         self._load_segment(self.seg_idx)
+
+    def _rebuild_from_state(self, state):
+        """(Re)build the text + image items from a state list, replacing any
+        current ones. Accepts both base64 ('data') and in-memory ('pix') images
+        so it serves project-load AND undo snapshots."""
+        for it in self.items + self.images:
+            self.scene.removeItem(it)
+        self.items = []
+        self.images = []
+        for d in state:
+            if d.get("kind") == "image":
+                pix = d["pix"] if "pix" in d else _b64_to_pixmap(d["data"])
+                im = ImageItem(pix, d["x"], d["y"], d["w"], d["h"])
+                self.scene.addItem(im)
+                if d.get("rot"):
+                    im.setTransformOriginPoint(im.w / 2, im.h / 2)
+                    im.setRotation(d["rot"])
+                self.images.append(im)
+                continue
+            it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
+            it.font = QFont(d["font"])
+            it.max_size = float(d["size"])
+            it.font.setBold(d.get("bold", False))
+            it.font.setItalic(d.get("italic", False))
+            it.font.setUnderline(d.get("underline", False))
+            it.fill = QColor(d["fill"])
+            it.outline = QColor(d["outline"])
+            it.outline_w = d["outline_w"]
+            if "align" in d:
+                it.align = Qt.AlignmentFlag(d["align"])
+            self.scene.addItem(it)
+            it._refit()
+            if d.get("rot"):
+                it.setTransformOriginPoint(it.w / 2, it.h / 2)
+                it.setRotation(d["rot"])
+            self.items.append(it)
+        for it in self.items:
+            it.on_edit = self._start_inline_edit
 
     def _load_segment(self, idx):
         if not self.segments:
@@ -692,51 +823,33 @@ class TypesetEditor(QWidget):
         self.scene.clear()
         self.items = []
         self.images = []
-        pix = QPixmap(os.path.join(self.base, seg["image"]))
-        bg = QGraphicsPixmapItem(pix)
-        bg.setZValue(-1)
-        self.scene.addItem(bg)
+        # working raster: edits (blend/paint) bake here; eraser restores _orig_np.
+        self._orig_np = cv2.imread(os.path.join(self.base, seg["image"]))
+        if self._orig_np is None:
+            self._orig_np = np.full((int(seg["height"]), int(seg["width"]), 3),
+                                    245, np.uint8)
+        cached = seg.get("_work_np")
+        self._work_np = cached.copy() if cached is not None else self._orig_np.copy()
+        self._bg_pixmap = _bgr_to_qpixmap(self._work_np)
+        self._bg_item = QGraphicsPixmapItem(self._bg_pixmap)
+        self._bg_item.setZValue(-1)
+        self.scene.addItem(self._bg_item)
         self.scene.setSceneRect(0, 0, seg["width"], seg["height"])
+
         state = seg.get("_state")
         if state:
-            for d in state:
-                if d.get("kind") == "image":
-                    im = ImageItem(_b64_to_pixmap(d["data"]),
-                                   d["x"], d["y"], d["w"], d["h"])
-                    self.scene.addItem(im)
-                    if d.get("rot"):
-                        im.setTransformOriginPoint(im.w / 2, im.h / 2)
-                        im.setRotation(d["rot"])
-                    self.images.append(im)
-                    continue
-                it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
-                it.font = QFont(d["font"])
-                it.max_size = float(d["size"])  # restore the font cap
-                it.font.setBold(d.get("bold", False))
-                it.font.setItalic(d.get("italic", False))
-                it.font.setUnderline(d.get("underline", False))
-                it.fill = QColor(d["fill"])
-                it.outline = QColor(d["outline"])
-                it.outline_w = d["outline_w"]
-                if "align" in d:
-                    it.align = Qt.AlignmentFlag(d["align"])
-                self.scene.addItem(it)
-                it._refit()
-                if d.get("rot"):
-                    it.setTransformOriginPoint(it.w / 2, it.h / 2)
-                    it.setRotation(d["rot"])
-                self.items.append(it)
+            self._rebuild_from_state(state)
         else:
             for b in seg["items"]:
                 x, y, w, h = b["bbox"]
                 it = TextBoxItem(b["n"], b["src"], x, y, w, h)
+                it.on_edit = self._start_inline_edit
                 self.scene.addItem(it)
                 self.items.append(it)
-        for it in self.items:
-            it.on_edit = self._start_inline_edit
         self.seg_lbl.setText(f"Canvas {idx + 1}/{len(self.segments)}")
         self.prev.setEnabled(idx > 0)
         self.next.setEnabled(idx < len(self.segments) - 1)
+        self._reset_history()
 
     # -- editing -------------------------------------------------------
     def _selected(self):
@@ -776,6 +889,7 @@ class TypesetEditor(QWidget):
             it.text = self.text_edit.toPlainText()
             it._refit()
             it.update()
+        self._record_if_changed()
 
     def _font_changed(self, font):
         for it in self._selected():
@@ -784,6 +898,7 @@ class TypesetEditor(QWidget):
             it.font = nf
             it._refit()
             it.update()
+        self._record_if_changed()
 
     def _size_changed(self, v):
         # Size sets the font CAP; the box is the boss, so the font still shrinks
@@ -792,6 +907,7 @@ class TypesetEditor(QWidget):
             it.max_size = float(v)
             it._refit()
             it.update()
+        self._record_if_changed()
 
     # -- inline (double-click) editing ---------------------------------
     def _start_inline_edit(self, item):
@@ -845,12 +961,14 @@ class TypesetEditor(QWidget):
         if proxy.scene():
             proxy.scene().removeItem(proxy)
         self._sync_panel()
+        self._record_if_changed()
 
     def _ow_changed(self, v):
         for it in self._selected():
             it.prepareGeometryChange()
             it.outline_w = v
             it.update()
+        self._record_if_changed()
 
     def _add_box(self):
         center = self.view.mapToScene(self.view.viewport().rect().center())
@@ -861,6 +979,7 @@ class TypesetEditor(QWidget):
         self.items.append(it)
         self.scene.clearSelection()
         it.setSelected(True)
+        self._record_if_changed()
 
     def _delete_selected(self):
         for it in list(self.scene.selectedItems()):
@@ -869,8 +988,15 @@ class TypesetEditor(QWidget):
                 self.items.remove(it)
             if it in self.images:
                 self.images.remove(it)
+        self._record_if_changed()
 
     def keyPressEvent(self, e):
+        if e.matches(QKeySequence.Undo):  # Cmd/Ctrl+Z
+            self._undo()
+            return
+        if e.matches(QKeySequence.Redo):  # Cmd+Shift+Z / Ctrl+Y
+            self._redo()
+            return
         if e.matches(QKeySequence.Paste) or (
             e.key() == Qt.Key_V and e.modifiers() & Qt.ControlModifier
         ):
@@ -898,6 +1024,7 @@ class TypesetEditor(QWidget):
         self.images.append(im)
         self.scene.clearSelection()
         im.setSelected(True)
+        self._record_if_changed()
         return im
 
     def _add_image(self):
@@ -956,22 +1083,179 @@ class TypesetEditor(QWidget):
         if path and os.path.exists(path):
             self._place_image(QPixmap(path))
 
+    # -- touch-up painting (blend / erase / paint) ---------------------
+    def _tool_changed(self, _i):
+        self._tool = self.tool_combo.currentData()
+        self.view.tool = self._tool
+        # While painting, let clicks pass to the canvas rather than items.
+        for it in self.items + self.images:
+            it.setFlag(QGraphicsItem.ItemIsSelectable, self._tool == "select")
+            it.setFlag(QGraphicsItem.ItemIsMovable, self._tool == "select")
+        if self._tool != "select":
+            self.scene.clearSelection()
+
+    def _brush_changed(self, v):
+        self._brush_size = int(v)
+
+    def _pick_paint_color(self):
+        c = QColorDialog.getColor(self._paint_color, self, "Paint colour")
+        if c.isValid():
+            self._paint_color = c
+
+    @staticmethod
+    def _brush_mask(h, w, cx, cy, r):
+        yy, xx = np.ogrid[:h, :w]
+        dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        m = np.clip(1.0 - dist / max(1.0, r), 0.0, 1.0) ** 0.6
+        return m[:, :, None].astype(np.float32)
+
+    def _stamp(self, fx, fy):
+        if self._work_np is None or self._tool == "select":
+            return
+        r = max(2, self._brush_size // 2)
+        x, y = int(round(fx)), int(round(fy))
+        H, W = self._work_np.shape[:2]
+        x0, x1 = max(0, x - r), min(W, x + r)
+        y0, y1 = max(0, y - r), min(H, y + r)
+        if x1 <= x0 or y1 <= y0:
+            return
+        patch = self._work_np[y0:y1, x0:x1].astype(np.float32)
+        mask = self._brush_mask(y1 - y0, x1 - x0, x - x0, y - y0, r)
+        if self._tool == "blend":
+            k = r if r % 2 == 1 else r + 1
+            k = max(3, k)
+            blur = cv2.GaussianBlur(self._work_np[y0:y1, x0:x1], (k, k), 0)
+            out = mask * blur.astype(np.float32) + (1 - mask) * patch
+        elif self._tool == "erase":
+            orig = self._orig_np[y0:y1, x0:x1].astype(np.float32)
+            out = mask * orig + (1 - mask) * patch
+        elif self._tool == "paint":
+            col = np.array([self._paint_color.blue(), self._paint_color.green(),
+                            self._paint_color.red()], np.float32)
+            out = mask * col + (1 - mask) * patch
+        else:
+            return
+        self._work_np[y0:y1, x0:x1] = np.clip(out, 0, 255).astype(np.uint8)
+        self._update_bg_patch(x0, y0, x1, y1)
+
+    def _update_bg_patch(self, x0, y0, x1, y1):
+        patch = np.ascontiguousarray(self._work_np[y0:y1, x0:x1, ::-1])
+        h, w = patch.shape[:2]
+        qimg = QImage(patch.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        p = QPainter(self._bg_pixmap)
+        p.drawImage(x0, y0, qimg)
+        p.end()
+        self._bg_item.setPixmap(self._bg_pixmap)
+
+    def _paint_begin(self, x, y):
+        if self._work_np is None:
+            return
+        self._work_np = self._work_np.copy()  # copy-on-write so undo keeps prior
+        self._last_paint = None
+        self._paint_move(x, y)
+
+    def _paint_move(self, x, y):
+        last = self._last_paint
+        if last is None:
+            self._stamp(x, y)
+        else:
+            import math
+            dx, dy = x - last[0], y - last[1]
+            dist = math.hypot(dx, dy)
+            step = max(1.0, self._brush_size * 0.25)
+            n = max(1, int(dist / step))
+            for i in range(1, n + 1):
+                self._stamp(last[0] + dx * i / n, last[1] + dy * i / n)
+        self._last_paint = (x, y)
+
+    def _paint_end(self):
+        self._last_paint = None
+        self._record_if_changed()
+
+    # -- undo / redo ---------------------------------------------------
+    def _snap_state(self):
+        out = []
+        for it in self.items:
+            out.append(it.to_dict())
+        for im in self.images:
+            out.append({"kind": "image", "pix": im._pix, "x": im.x(), "y": im.y(),
+                        "w": im.w, "h": im.h, "rot": im.rotation()})
+        return out
+
+    def _sig(self):
+        parts = []
+        for it in self.items:
+            parts.append(("t", round(it.x()), round(it.y()), round(it.w),
+                          round(it.h), it.text, round(it.rotation()),
+                          round(it.max_size), it.fill.name(), it.outline.name(),
+                          it.outline_w, it.font.family(), it.font.bold(),
+                          it.font.italic(), it.font.underline(), int(it.align)))
+        for im in self.images:
+            parts.append(("i", round(im.x()), round(im.y()), round(im.w),
+                          round(im.h), round(im.rotation()), id(im._pix)))
+        return (tuple(parts), id(self._work_np))
+
+    def _reset_history(self):
+        self._history = [{"state": self._snap_state(), "work": self._work_np,
+                          "sig": self._sig()}]
+        self._hist_idx = 0
+        self._update_undo_buttons()
+
+    def _record(self):
+        self._history = self._history[: self._hist_idx + 1]
+        self._history.append({"state": self._snap_state(), "work": self._work_np,
+                              "sig": self._sig()})
+        if len(self._history) > 40:
+            self._history.pop(0)
+        self._hist_idx = len(self._history) - 1
+        self._update_undo_buttons()
+
+    def _record_if_changed(self):
+        if not self._history or self._sig() != self._history[self._hist_idx]["sig"]:
+            self._record()
+
+    def _apply_snapshot(self, snap):
+        self._work_np = snap["work"]
+        self._bg_pixmap = _bgr_to_qpixmap(self._work_np)
+        self._bg_item.setPixmap(self._bg_pixmap)
+        self._rebuild_from_state(snap["state"])
+
+    def _undo(self):
+        if self._hist_idx > 0:
+            self._commit_inline()
+            self._hist_idx -= 1
+            self._apply_snapshot(self._history[self._hist_idx])
+            self._update_undo_buttons()
+
+    def _redo(self):
+        if self._hist_idx < len(self._history) - 1:
+            self._hist_idx += 1
+            self._apply_snapshot(self._history[self._hist_idx])
+            self._update_undo_buttons()
+
+    def _update_undo_buttons(self):
+        self.undo_btn.setEnabled(self._hist_idx > 0)
+        self.redo_btn.setEnabled(self._hist_idx < len(self._history) - 1)
+
     def _toggle_bold(self):
         for it in self._selected():
             it.font.setBold(self.bold_btn.isChecked())
             it._refit()
             it.update()
+        self._record_if_changed()
 
     def _toggle_italic(self):
         for it in self._selected():
             it.font.setItalic(self.italic_btn.isChecked())
             it._refit()
             it.update()
+        self._record_if_changed()
 
     def _toggle_underline(self):
         for it in self._selected():
             it.font.setUnderline(self.underline_btn.isChecked())
             it.update()
+        self._record_if_changed()
 
     def _align_changed(self, i):
         a = [Qt.AlignLeft, Qt.AlignHCenter, Qt.AlignRight][i] | Qt.AlignVCenter
@@ -979,11 +1263,13 @@ class TypesetEditor(QWidget):
             it.align = a
             it._refit()
             it.update()
+        self._record_if_changed()
 
     def _rot_changed(self, v):
         for it in self._selected():
             it.setTransformOriginPoint(it.w / 2, it.h / 2)
             it.setRotation(v)
+        self._record_if_changed()
 
     def _pick_fill(self):
         c = QColorDialog.getColor(QColor(0, 0, 0), self, "Text colour")
@@ -991,6 +1277,7 @@ class TypesetEditor(QWidget):
             for it in self._selected():
                 it.fill = c
                 it.update()
+            self._record_if_changed()
 
     def _pick_outline(self):
         c = QColorDialog.getColor(QColor(255, 255, 255), self, "Outline colour")
@@ -998,6 +1285,7 @@ class TypesetEditor(QWidget):
             for it in self._selected():
                 it.outline = c
                 it.update()
+            self._record_if_changed()
 
     def _copy_for_claude(self):
         lines = []
@@ -1034,6 +1322,7 @@ class TypesetEditor(QWidget):
                 it._refit()
                 it.update()
                 filled += 1
+        self._record_if_changed()
         QMessageBox.information(self, "Filled", f"Filled {filled} text boxes.")
 
     # -- export / save -------------------------------------------------
