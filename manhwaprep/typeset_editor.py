@@ -618,7 +618,9 @@ class TypesetEditor(QWidget):
         self._bg_pixmap = None
         self._bg_item = None
         self._last_paint = None
-        self._remove_mask = None  # accumulates a stroke for the removal brush
+        self._remove_mask = None  # accumulates the removal-brush highlight
+        self._hl_pixmap = None
+        self._hl_item = None
         self._history = []
         self._hist_idx = -1
 
@@ -716,6 +718,18 @@ class TypesetEditor(QWidget):
         self.paint_color_btn.clicked.connect(self._pick_paint_color)
         brow.addWidget(self.paint_color_btn)
         bg.addLayout(brow)
+        # Remove tool: highlight, then commit/clear.
+        erow = QHBoxLayout()
+        self.erase_hl_btn = QPushButton("🩹 Erase highlighted")
+        self.erase_hl_btn.setToolTip("Inpaint everything you've highlighted")
+        self.erase_hl_btn.clicked.connect(self._erase_highlight)
+        self.erase_hl_btn.setEnabled(False)
+        self.clear_hl_btn = QPushButton("Clear")
+        self.clear_hl_btn.clicked.connect(self._clear_highlight)
+        self.clear_hl_btn.setEnabled(False)
+        erow.addWidget(self.erase_hl_btn, 1)
+        erow.addWidget(self.clear_hl_btn)
+        bg.addLayout(erow)
         self.brush_group.setVisible(False)
         col.addWidget(self.brush_group)
 
@@ -935,6 +949,13 @@ class TypesetEditor(QWidget):
         self._bg_item.setZValue(-1)
         self.scene.addItem(self._bg_item)
         self.scene.setSceneRect(0, 0, seg["width"], seg["height"])
+        # removal-brush highlight overlay (red marks-to-erase, above the art)
+        self._remove_mask = None
+        self._hl_pixmap = QPixmap(int(seg["width"]), int(seg["height"]))
+        self._hl_pixmap.fill(Qt.transparent)
+        self._hl_item = QGraphicsPixmapItem(self._hl_pixmap)
+        self._hl_item.setZValue(-0.5)
+        self.scene.addItem(self._hl_item)
 
         state = seg.get("_state")
         if state:
@@ -1206,6 +1227,10 @@ class TypesetEditor(QWidget):
             self.scene.clearSelection()
         self.brush_group.setVisible(painting)
         self.paint_color_btn.setVisible(name == "paint")
+        self.erase_hl_btn.setVisible(name == "remove")
+        self.clear_hl_btn.setVisible(name == "remove")
+        if name != "remove":
+            self._clear_highlight()  # drop any pending marks when switching away
         self.view.setCursor(Qt.CrossCursor if painting else Qt.ArrowCursor)
         self.view.viewport().update()
 
@@ -1232,18 +1257,18 @@ class TypesetEditor(QWidget):
         x, y = int(round(fx)), int(round(fy))
         H, W = self._work_np.shape[:2]
         if self._tool == "remove":
-            # accumulate the stroke into a mask; show it as a red preview on the
-            # display only — the actual inpaint happens once on release.
+            # Highlight what will be erased — accumulate across strokes into a
+            # mask + a red overlay. Nothing is inpainted until "Erase" is pressed.
             if self._remove_mask is None:
                 self._remove_mask = np.zeros((H, W), np.uint8)
             cv2.circle(self._remove_mask, (x, y), r, 255, -1)
-            p = QPainter(self._bg_pixmap)
+            p = QPainter(self._hl_pixmap)
             p.setRenderHint(QPainter.Antialiasing)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(255, 0, 0, 120))
             p.drawEllipse(QRectF(x - r, y - r, 2 * r, 2 * r))
             p.end()
-            self._bg_item.setPixmap(self._bg_pixmap)
+            self._hl_item.setPixmap(self._hl_pixmap)
             return
         x0, x1 = max(0, x - r), min(W, x + r)
         y0, y1 = max(0, y - r), min(H, y + r)
@@ -1280,9 +1305,10 @@ class TypesetEditor(QWidget):
     def _paint_begin(self, x, y):
         if self._work_np is None:
             return
-        self._work_np = self._work_np.copy()  # copy-on-write so undo keeps prior
-        if self._tool == "remove":
-            self._remove_mask = None  # fresh stroke
+        # Remove just paints a highlight (no canvas change until Erase); the
+        # other brushes edit the canvas, so copy-on-write for undo.
+        if self._tool != "remove":
+            self._work_np = self._work_np.copy()
         self._last_paint = None
         self._paint_move(x, y)
 
@@ -1302,15 +1328,35 @@ class TypesetEditor(QWidget):
 
     def _paint_end(self):
         self._last_paint = None
-        if (self._tool == "remove" and self._remove_mask is not None
-                and self._remove_mask.any()):
-            m = cv2.dilate(
-                self._remove_mask,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-            self._work_np = cv2.inpaint(self._work_np, m, 4, cv2.INPAINT_TELEA)
-            self._remove_mask = None
-            self._bg_pixmap = _bgr_to_qpixmap(self._work_np)  # clears red preview
-            self._bg_item.setPixmap(self._bg_pixmap)
+        if self._tool == "remove":
+            # update the Erase button's enabled state; no canvas change yet
+            has = self._remove_mask is not None and bool(self._remove_mask.any())
+            self.erase_hl_btn.setEnabled(has)
+            self.clear_hl_btn.setEnabled(has)
+            return
+        self._record_if_changed()
+
+    def _clear_highlight(self):
+        self._remove_mask = None
+        if self._hl_pixmap is not None:
+            self._hl_pixmap.fill(Qt.transparent)
+            self._hl_item.setPixmap(self._hl_pixmap)
+        if hasattr(self, "erase_hl_btn"):
+            self.erase_hl_btn.setEnabled(False)
+            self.clear_hl_btn.setEnabled(False)
+
+    def _erase_highlight(self):
+        """Inpaint every highlighted region at once (Telea), then clear it."""
+        if self._remove_mask is None or not self._remove_mask.any():
+            return
+        self._work_np = self._work_np.copy()  # copy-on-write for undo
+        m = cv2.dilate(
+            self._remove_mask,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        self._work_np = cv2.inpaint(self._work_np, m, 4, cv2.INPAINT_TELEA)
+        self._clear_highlight()
+        self._bg_pixmap = _bgr_to_qpixmap(self._work_np)
+        self._bg_item.setPixmap(self._bg_pixmap)
         self._record_if_changed()
 
     # -- undo / redo ---------------------------------------------------
