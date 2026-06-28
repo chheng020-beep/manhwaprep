@@ -138,6 +138,9 @@ class TextBoxItem(QGraphicsItem):
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
+        # Cache the (expensive outlined-Khmer) render to a pixmap so scrolling /
+        # zooming a page full of boxes doesn't re-shape every glyph each repaint.
+        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.setAcceptHoverEvents(True)
         self.setPos(x, y)
         self.setTransformOriginPoint(self.w / 2, self.h / 2)
@@ -362,6 +365,7 @@ class ImageItem(QGraphicsItem):
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
+        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.setAcceptHoverEvents(True)
         self.setPos(x, y)
         self.setTransformOriginPoint(self.w / 2, self.h / 2)
@@ -474,6 +478,8 @@ class _CanvasView(QGraphicsView):
     (blend / erase / paint) a left-drag paints onto the canvas instead of moving
     items; in select mode it behaves normally."""
 
+    BRUSH_TOOLS = ("blend", "erase", "paint", "remove")
+
     def __init__(self, scene):
         super().__init__(scene)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -482,23 +488,36 @@ class _CanvasView(QGraphicsView):
         self.editor = None
         self._painting = False
         self._brush_pt = None  # scene pos of the brush-size preview ring
+        self._box0 = None      # box-remove rubber-band start
+        self._box1 = None
 
     def _xy(self, e):
         p = self.mapToScene(e.position().toPoint())
         return p.x(), p.y()
 
     def mousePressEvent(self, e):
-        if self.tool != "select" and self.editor and e.button() == Qt.LeftButton:
-            self._painting = True
-            self.editor._paint_begin(*self._xy(e))
-            e.accept()
-            return
+        if self.editor and e.button() == Qt.LeftButton:
+            if self.tool == "boxremove":
+                self._box0 = self._box1 = self.mapToScene(e.position().toPoint())
+                self.viewport().update()
+                e.accept()
+                return
+            if self.tool in self.BRUSH_TOOLS:
+                self._painting = True
+                self.editor._paint_begin(*self._xy(e))
+                e.accept()
+                return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
-        if self.tool != "select":  # show the brush footprint under the cursor
+        if self.tool in self.BRUSH_TOOLS:  # show the brush footprint
             self._brush_pt = self.mapToScene(e.position().toPoint())
             self.viewport().update()
+        if self._box0 is not None:
+            self._box1 = self.mapToScene(e.position().toPoint())
+            self.viewport().update()
+            e.accept()
+            return
         if self._painting and self.editor:
             self.editor._paint_move(*self._xy(e))
             e.accept()
@@ -512,17 +531,32 @@ class _CanvasView(QGraphicsView):
 
     def drawForeground(self, p, rect):
         super().drawForeground(p, rect)
-        if self.tool == "select" or self._brush_pt is None or not self.editor:
+        if not self.editor:
             return
-        r = self.editor._brush_size / 2.0
-        pen = QPen(QColor(0, 0, 0)); pen.setCosmetic(True)
-        p.setPen(pen); p.setBrush(Qt.NoBrush)
-        p.drawEllipse(self._brush_pt, r, r)
-        pen2 = QPen(QColor(255, 255, 255)); pen2.setCosmetic(True)
-        pen2.setStyle(Qt.DashLine); p.setPen(pen2)
-        p.drawEllipse(self._brush_pt, r, r)
+        if self._box0 is not None and self._box1 is not None:
+            pen = QPen(QColor(255, 0, 0)); pen.setCosmetic(True)
+            pen.setStyle(Qt.DashLine); p.setPen(pen)
+            p.setBrush(QColor(255, 0, 0, 40))
+            p.drawRect(QRectF(self._box0, self._box1).normalized())
+            return
+        if self.tool in self.BRUSH_TOOLS and self._brush_pt is not None:
+            r = self.editor._brush_size / 2.0
+            pen = QPen(QColor(0, 0, 0)); pen.setCosmetic(True)
+            p.setPen(pen); p.setBrush(Qt.NoBrush)
+            p.drawEllipse(self._brush_pt, r, r)
+            pen2 = QPen(QColor(255, 255, 255)); pen2.setCosmetic(True)
+            pen2.setStyle(Qt.DashLine); p.setPen(pen2)
+            p.drawEllipse(self._brush_pt, r, r)
 
     def mouseReleaseEvent(self, e):
+        if self._box0 is not None:
+            a, b = self._box0, self._box1 or self._box0
+            self._box0 = self._box1 = None
+            self.viewport().update()
+            if self.editor:
+                self.editor._box_remove(a.x(), a.y(), b.x(), b.y())
+            e.accept()
+            return
         if self._painting:
             self._painting = False
             if self.editor:
@@ -691,6 +725,10 @@ class TypesetEditor(QWidget):
             "🩹", "remove",
             "Remove brush — paint over a watermark / SFX to erase it (rebuilds "
             "the background)"))
+        bar.addWidget(self._tool_button(
+            "⬚", "boxremove",
+            "Box detect-remove — drag a box over a watermark; only the mark "
+            "inside is erased, the art is kept"))
         bar.addStretch(1)
         self.undo_btn = QToolButton(); self.undo_btn.setText("↶")
         self.undo_btn.setFixedSize(38, 38); self.undo_btn.setToolTip("Undo (⌘Z)")
@@ -1225,7 +1263,7 @@ class TypesetEditor(QWidget):
             it.setFlag(QGraphicsItem.ItemIsMovable, not painting)
         if painting:
             self.scene.clearSelection()
-        self.brush_group.setVisible(painting)
+        self.brush_group.setVisible(name in ("blend", "erase", "paint", "remove"))
         self.paint_color_btn.setVisible(name == "paint")
         self.erase_hl_btn.setVisible(name == "remove")
         self.clear_hl_btn.setVisible(name == "remove")
@@ -1233,6 +1271,53 @@ class TypesetEditor(QWidget):
             self._clear_highlight()  # drop any pending marks when switching away
         self.view.setCursor(Qt.CrossCursor if painting else Qt.ArrowCursor)
         self.view.viewport().update()
+
+    @staticmethod
+    def _detect_marks(region_bgr):
+        """Mask the watermark/text pixels inside a region: those that deviate from
+        their LOCAL colour (Lab distance) — the same cue the SFX cleaner uses —
+        then fill enclosed interiors so solid marks are erased whole, not ringed."""
+        lab = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        local = cv2.GaussianBlur(lab, (21, 21), 0)
+        dist = np.sqrt(((lab - local) ** 2).sum(axis=2))
+        m = (dist > 16).astype(np.uint8) * 255
+        m = cv2.morphologyEx(
+            m, cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+        # flood the outside from a guaranteed-background border; the un-flooded
+        # remainder is the enclosed interior of a solid mark -> add it back.
+        b = cv2.copyMakeBorder(m, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+        ff = b.copy()
+        cv2.floodFill(ff, np.zeros((b.shape[0] + 2, b.shape[1] + 2), np.uint8),
+                      (0, 0), 255)
+        filled = b | cv2.bitwise_not(ff)
+        return filled[1:-1, 1:-1]
+
+    def _box_remove(self, x0, y0, x1, y1):
+        """Drag-a-box removal: detect the mark inside the box and inpaint only
+        those pixels, leaving the surrounding art intact."""
+        if self._work_np is None:
+            return
+        H, W = self._work_np.shape[:2]
+        x0, x1 = sorted((int(x0), int(x1)))
+        y0, y1 = sorted((int(y0), int(y1)))
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(W, x1), min(H, y1)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return
+        region = self._work_np[y0:y1, x0:x1]
+        m = self._detect_marks(region)
+        if not m.any():
+            return
+        full = np.zeros((H, W), np.uint8)
+        full[y0:y1, x0:x1] = m
+        full = cv2.dilate(
+            full, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        self._work_np = self._work_np.copy()  # copy-on-write for undo
+        self._work_np = cv2.inpaint(self._work_np, full, 4, cv2.INPAINT_TELEA)
+        self._bg_pixmap = _bgr_to_qpixmap(self._work_np)
+        self._bg_item.setPixmap(self._bg_pixmap)
+        self._record_if_changed()
 
     def _brush_changed(self, v):
         self._brush_size = int(v)
