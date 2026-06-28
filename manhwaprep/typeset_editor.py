@@ -685,7 +685,7 @@ class TypesetEditor(QWidget):
         b.setText(glyph)
         b.setCheckable(True)
         b.setToolTip(tip)
-        b.setFixedSize(42, 38)
+        b.setFixedSize(40, 36)
         b.setStyleSheet("QToolButton{font-size:18px;border:1px solid #ccc;"
                         "border-radius:6px;}"
                         "QToolButton:checked{background:#2d7ff9;color:white;"
@@ -699,24 +699,34 @@ class TypesetEditor(QWidget):
         col = QVBoxLayout()
         col.setSpacing(8)
 
-        # canvas navigation
+        # canvas navigation + undo/redo (kept together so they always fit)
         nav = QHBoxLayout()
-        self.prev = QToolButton(); self.prev.setText("‹"); self.prev.setFixedWidth(34)
-        self.next = QToolButton(); self.next.setText("›"); self.next.setFixedWidth(34)
+        nav.setSpacing(4)
+        self.prev = QToolButton(); self.prev.setText("‹"); self.prev.setFixedWidth(30)
+        self.next = QToolButton(); self.next.setText("›"); self.next.setFixedWidth(30)
         self.prev.clicked.connect(lambda: self._go(-1))
         self.next.clicked.connect(lambda: self._go(1))
         self.seg_lbl = QLabel("")
+        self.undo_btn = QToolButton(); self.undo_btn.setText("↶")
+        self.undo_btn.setFixedWidth(30); self.undo_btn.setToolTip("Undo (⌘Z)")
+        self.undo_btn.clicked.connect(self._undo)
+        self.redo_btn = QToolButton(); self.redo_btn.setText("↷")
+        self.redo_btn.setFixedWidth(30); self.redo_btn.setToolTip("Redo (⇧⌘Z)")
+        self.redo_btn.clicked.connect(self._redo)
         nav.addWidget(self.prev)
         nav.addWidget(self.seg_lbl, 1, Qt.AlignCenter)
         nav.addWidget(self.next)
+        nav.addSpacing(8)
+        nav.addWidget(self.undo_btn)
+        nav.addWidget(self.redo_btn)
         col.addLayout(nav)
 
-        # tool toolbar (icons, not a dropdown) + undo/redo
+        # tool toolbar (icons, not a dropdown)
         self._tool_group = QButtonGroup(self)
         self._tool_group.setExclusive(True)
         self._tool_buttons = {}
         bar = QHBoxLayout()
-        bar.setSpacing(4)
+        bar.setSpacing(3)
         bar.addWidget(self._tool_button("⤢", "select", "Select / move (V)"))
         bar.addWidget(self._tool_button("💧", "blend", "Blend / smudge"))
         bar.addWidget(self._tool_button("🧽", "erase", "Erase — restores original art"))
@@ -730,14 +740,6 @@ class TypesetEditor(QWidget):
             "Box detect-remove — drag a box over a watermark; only the mark "
             "inside is erased, the art is kept"))
         bar.addStretch(1)
-        self.undo_btn = QToolButton(); self.undo_btn.setText("↶")
-        self.undo_btn.setFixedSize(38, 38); self.undo_btn.setToolTip("Undo (⌘Z)")
-        self.undo_btn.clicked.connect(self._undo)
-        self.redo_btn = QToolButton(); self.redo_btn.setText("↷")
-        self.redo_btn.setFixedSize(38, 38); self.redo_btn.setToolTip("Redo (⇧⌘Z)")
-        self.redo_btn.clicked.connect(self._redo)
-        bar.addWidget(self.undo_btn)
-        bar.addWidget(self.redo_btn)
         col.addLayout(bar)
         self._tool_buttons["select"].setChecked(True)
 
@@ -902,7 +904,7 @@ class TypesetEditor(QWidget):
         scroll = QScrollArea()
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(320)
+        scroll.setFixedWidth(340)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
         return scroll
