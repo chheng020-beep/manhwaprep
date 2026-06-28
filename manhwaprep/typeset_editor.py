@@ -618,6 +618,7 @@ class TypesetEditor(QWidget):
         self._bg_pixmap = None
         self._bg_item = None
         self._last_paint = None
+        self._remove_mask = None  # accumulates a stroke for the removal brush
         self._history = []
         self._hist_idx = -1
 
@@ -684,6 +685,10 @@ class TypesetEditor(QWidget):
         bar.addWidget(self._tool_button("💧", "blend", "Blend / smudge"))
         bar.addWidget(self._tool_button("🧽", "erase", "Erase — restores original art"))
         bar.addWidget(self._tool_button("🖌", "paint", "Paint a colour"))
+        bar.addWidget(self._tool_button(
+            "🩹", "remove",
+            "Remove brush — paint over a watermark / SFX to erase it (rebuilds "
+            "the background)"))
         bar.addStretch(1)
         self.undo_btn = QToolButton(); self.undo_btn.setText("↶")
         self.undo_btn.setFixedSize(38, 38); self.undo_btn.setToolTip("Undo (⌘Z)")
@@ -1226,6 +1231,20 @@ class TypesetEditor(QWidget):
         r = max(2, self._brush_size // 2)
         x, y = int(round(fx)), int(round(fy))
         H, W = self._work_np.shape[:2]
+        if self._tool == "remove":
+            # accumulate the stroke into a mask; show it as a red preview on the
+            # display only — the actual inpaint happens once on release.
+            if self._remove_mask is None:
+                self._remove_mask = np.zeros((H, W), np.uint8)
+            cv2.circle(self._remove_mask, (x, y), r, 255, -1)
+            p = QPainter(self._bg_pixmap)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 0, 0, 120))
+            p.drawEllipse(QRectF(x - r, y - r, 2 * r, 2 * r))
+            p.end()
+            self._bg_item.setPixmap(self._bg_pixmap)
+            return
         x0, x1 = max(0, x - r), min(W, x + r)
         y0, y1 = max(0, y - r), min(H, y + r)
         if x1 <= x0 or y1 <= y0:
@@ -1262,6 +1281,8 @@ class TypesetEditor(QWidget):
         if self._work_np is None:
             return
         self._work_np = self._work_np.copy()  # copy-on-write so undo keeps prior
+        if self._tool == "remove":
+            self._remove_mask = None  # fresh stroke
         self._last_paint = None
         self._paint_move(x, y)
 
@@ -1281,6 +1302,15 @@ class TypesetEditor(QWidget):
 
     def _paint_end(self):
         self._last_paint = None
+        if (self._tool == "remove" and self._remove_mask is not None
+                and self._remove_mask.any()):
+            m = cv2.dilate(
+                self._remove_mask,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+            self._work_np = cv2.inpaint(self._work_np, m, 4, cv2.INPAINT_TELEA)
+            self._remove_mask = None
+            self._bg_pixmap = _bgr_to_qpixmap(self._work_np)  # clears red preview
+            self._bg_item.setPixmap(self._bg_pixmap)
         self._record_if_changed()
 
     # -- undo / redo ---------------------------------------------------
