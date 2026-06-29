@@ -214,8 +214,9 @@ class TextBoxItem(QGraphicsItem):
         p.setFont(self.font)
         flags = int(self.align) | WRAP_FLAGS
         # Keep the halo proportional to the text so it stays readable on dark
-        # art even at large sizes (a fixed 3px ring vanishes behind big glyphs).
-        ow = max(self.outline_w, round(self.font.pointSizeF() * 0.10))
+        # art even at large sizes (a fixed 3px ring vanishes behind big glyphs),
+        # but cap it — the outline costs (2·ow+1)² drawText calls per box.
+        ow = min(12, max(self.outline_w, round(self.font.pointSizeF() * 0.10)))
         if ow > 0 and self.text:
             p.setPen(self.outline)
             for dx in range(-ow, ow + 1):
@@ -488,6 +489,12 @@ class _CanvasView(QGraphicsView):
         super().__init__(scene)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setMouseTracking(True)  # hover events even with no button down
+        # -- speed & smoothness (raster; per-item pixmap cache does the rest) --
+        self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing
+                            | QPainter.SmoothPixmapTransform)
+        self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
+        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing, True)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.tool = "select"
         self.editor = None
         self._painting = False
@@ -669,7 +676,8 @@ class TypesetEditor(QWidget):
         self.scene = QGraphicsScene()
         self.view = _CanvasView(self.scene)
         self.view.editor = self
-        self.view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+        self.view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing
+                                 | QPainter.SmoothPixmapTransform)
         self.scene.selectionChanged.connect(self._sync_panel)
         root.addWidget(self.view, 4)
 
