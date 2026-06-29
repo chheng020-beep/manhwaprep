@@ -70,8 +70,8 @@ from PySide6.QtWidgets import (
 WRAP_FLAGS = int(Qt.TextWordWrap) | int(Qt.TextWrapAnywhere)
 
 # story-heuristic post sizing, as multiples of canvas width (short, FB-friendly)
-IDEAL_FB = 1.0
-MAX_FB = 1.6
+IDEAL_FB = 0.8
+MAX_FB = 1.25
 
 _KHMER_FONT = None
 
