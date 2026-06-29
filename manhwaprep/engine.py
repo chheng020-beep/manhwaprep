@@ -31,8 +31,9 @@ SLAB_OVERLAP = 250
 
 # stroke-mask tuning
 _STROKE_KERNEL = 15   # > stroke width, < text height
-_STROKE_THRESH = 38   # top/black-hat response above this = a stroke pixel
-_MASK_DILATE = 2      # cover anti-aliased halo
+_STROKE_THRESH = 30   # top/black-hat response above this = a stroke pixel
+                      # (lowered from 38 to catch faint/grey leftover strokes)
+_MASK_DILATE = 3      # cover anti-aliased halo + faint residue around glyphs
 # SFX (pastel / neon) text differs from the art by COLOUR, not brightness, so a
 # grayscale stroke test misses it. These drive the colour-aware SFX mask.
 _SFX_COLOR_THRESH = 16    # local Lab colour deviation above this = an SFX pixel
