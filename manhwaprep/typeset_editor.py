@@ -833,6 +833,15 @@ class TypesetEditor(QWidget):
         self.ow.valueChanged.connect(self._ow_changed)
         srow.addWidget(self.ow)
         tg.addLayout(srow)
+        # quick font-size presets
+        qrow = QHBoxLayout()
+        qrow.addWidget(QLabel("Quick"))
+        for sz in (25, 30, 35, 40):
+            b = QPushButton(str(sz))
+            b.setFixedWidth(38)
+            b.clicked.connect(lambda _=False, s=sz: self._set_size(s))
+            qrow.addWidget(b)
+        tg.addLayout(qrow)
         frow = QHBoxLayout()
         self.bold_btn = self._fmt_toggle("B", "font-weight:bold;", self._toggle_bold)
         self.italic_btn = self._fmt_toggle("I", "font-style:italic;", self._toggle_italic)
@@ -1118,13 +1127,22 @@ class TypesetEditor(QWidget):
         self._record_if_changed()
 
     def _size_changed(self, v):
-        # Size sets the font CAP; the box is the boss, so the font still shrinks
-        # below this if the text wouldn't otherwise fit inside the box.
+        # Set the font size; the box height auto-grows to fit (Canva-style).
         for it in self._selected():
             it.max_size = float(v)
             it._refit()
             it.update()
         self._record_if_changed()
+
+    def _set_size(self, s):
+        """Quick-size preset button: apply size s to the selected box(es) and
+        reflect it in the Size spin box."""
+        if not self._selected():
+            return
+        self.size.blockSignals(True)
+        self.size.setValue(s)
+        self.size.blockSignals(False)
+        self._size_changed(s)
 
     # -- inline (double-click) editing ---------------------------------
     def _start_inline_edit(self, item):
