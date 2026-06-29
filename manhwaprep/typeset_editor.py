@@ -1759,15 +1759,38 @@ class TypesetEditor(QWidget):
         self._render(seg).save(out)
         QMessageBox.information(self, "Exported", out)
 
+    @staticmethod
+    def _has_khmer(text: str) -> bool:
+        return any("ក" <= c <= "៿" for c in text or "")
+
+    def _is_translated(self) -> bool:
+        """True if this canvas is done: either it has no text boxes (art-only
+        page) or at least one box has Khmer in it. A canvas with boxes that are
+        still empty / source text counts as NOT translated yet."""
+        if not self.items:
+            return True
+        return any(self._has_khmer(it.text) for it in self.items)
+
     def _export_all(self):
         self._commit_items()
-        done = []
+        cur = self.seg_idx
+        done, pending = [], []
+        clean_dir = os.path.join(self.base, "clean_untranslated")
         for i, seg in enumerate(self.segments):
+            self.seg_idx = i
             self._load_segment(i)
-            out = os.path.join(self.base, seg["image"].replace(".png", "_kh.png"))
+            translated = self._is_translated()
+            sub = self.base if translated else clean_dir
+            os.makedirs(sub, exist_ok=True)
+            out = os.path.join(sub, seg["image"].replace(".png", "_kh.png"))
             self._render(seg).save(out)
-            done.append(out)
-        QMessageBox.information(self, "Exported all", "\n".join(done))
+            (done if translated else pending).append(out)
+        self.seg_idx = cur
+        self._load_segment(cur)
+        msg = f"{len(done)} translated canvas(es) → {self.base}"
+        if pending:
+            msg += (f"\n{len(pending)} not-yet-translated → {clean_dir}")
+        QMessageBox.information(self, "Exported all", msg)
 
     def _export_pdf(self):
         """Render every canvas (Khmer + edits baked in) into one multi-page PDF."""
@@ -1786,18 +1809,24 @@ class TypesetEditor(QWidget):
             out += ".pdf"
         self._commit_items()
         cur = self.seg_idx
-        pages = []
+        pages, skipped = [], 0
         for i, seg in enumerate(self.segments):
             self.seg_idx = i
             self._load_segment(i)
+            if not self._is_translated():   # leave un-translated pages out
+                skipped += 1
+                continue
             bgr = self._qimage_to_bgr(self._render(seg))
             pages.append(Image.fromarray(np.ascontiguousarray(bgr[:, :, ::-1])))
         self.seg_idx = cur
         self._load_segment(cur)
         if not pages:
+            QMessageBox.warning(
+                self, "PDF", "No translated canvases yet — nothing to put in the PDF.")
             return
         pages[0].save(out, "PDF", save_all=True, append_images=pages[1:])
-        QMessageBox.information(self, "PDF saved", out)
+        note = f"\n({skipped} un-translated page(s) skipped)" if skipped else ""
+        QMessageBox.information(self, "PDF saved", out + note)
 
     # -- Facebook panel split ------------------------------------------
     @staticmethod
