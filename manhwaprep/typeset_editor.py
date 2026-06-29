@@ -506,14 +506,23 @@ class _CanvasView(QGraphicsView):
         p = self.mapToScene(e.position().toPoint())
         return p.x(), p.y()
 
+    def _eff_tool(self, mods):
+        """Spring-loaded secondary tool: while ⌘ (Ctrl on Win/Linux) is held over
+        the move tool, a drag becomes the box-mask — released, it's the mover
+        again. No real tool switch, so it springs back on its own."""
+        if self.tool == "select" and (mods & Qt.ControlModifier):
+            return "boxremove"
+        return self.tool
+
     def mousePressEvent(self, e):
         if self.editor and e.button() == Qt.LeftButton:
-            if self.tool == "boxremove":
+            eff = self._eff_tool(e.modifiers())
+            if eff == "boxremove":
                 self._box0 = self._box1 = self.mapToScene(e.position().toPoint())
                 self.viewport().update()
                 e.accept()
                 return
-            if self.tool in self.BRUSH_TOOLS:
+            if eff in self.BRUSH_TOOLS:
                 self._painting = True
                 self.editor._paint_begin(*self._xy(e))
                 e.accept()
@@ -521,6 +530,11 @@ class _CanvasView(QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        # spring cursor hint: crosshair while ⌘ is held over the move tool
+        if (self.tool == "select" and self._box0 is None and not self._painting):
+            self.viewport().setCursor(
+                Qt.CrossCursor if (e.modifiers() & Qt.ControlModifier)
+                else Qt.ArrowCursor)
         if self.tool in self.BRUSH_TOOLS:  # show the brush footprint
             self._brush_pt = self.mapToScene(e.position().toPoint())
             self.viewport().update()
