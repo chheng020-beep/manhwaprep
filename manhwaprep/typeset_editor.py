@@ -101,11 +101,10 @@ def khmer_font() -> str:
 
 
 class TextBoxItem(QGraphicsItem):
-    """An editable text frame. The BOX is the boss: you set its size (drag the
-    body to move, drag any edge or corner to resize) and the font auto-fits so
-    the text always sits inside — shrinking when it would overflow, growing to
-    fill, never spilling out. Corners also scale the font cap, so a corner drag
-    sizes the letters along with the box (Canva-style)."""
+    """An editable text frame, Canva-style. The font size is fixed; the box
+    height auto-grows to fit the wrapped text. Drag the body to move; drag a
+    left/right edge to change width (text wraps, box gets taller, font unchanged);
+    drag a corner to scale the font; drag top/bottom for a manual taller box."""
 
     HANDLE = 11  # corner handle square size, in item/scene px
     EDGE_GRAB = 9.0  # how far from an edge still counts as grabbing that edge
@@ -125,11 +124,10 @@ class TextBoxItem(QGraphicsItem):
         self.w = float(w)
         self.h = float(h)
         self.font = QFont(khmer_font())
-        # The BOX is the boss: the font auto-fits inside w×h, never larger than
-        # this cap. A high default lets the text fill the box; the Size spin box
-        # (or a corner drag) lowers/raises the cap.
-        self.max_size = self.FONT_MAX
-        self.font.setPointSizeF(20.0)
+        # Canva model: the FONT is fixed (this size) and the box HEIGHT auto-grows
+        # to fit the wrapped text. A corner drag or the Size box changes the font;
+        # narrowing the width just wraps the text and makes the box taller.
+        self.max_size = max(12.0, min(self.FONT_MAX, h * 0.32))
         self.fill = QColor(0, 0, 0)
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
@@ -149,32 +147,29 @@ class TextBoxItem(QGraphicsItem):
         self._start = None
         self._refit()
 
-    def _fits(self, text: str, size: float) -> bool:
-        """Does the wrapped text fit inside the box at this font size?"""
-        f = QFont(self.font)
-        f.setPointSizeF(size)
-        fm = QFontMetricsF(f)
+    def _refit(self, top=None, bottom=None, min_h=None):
+        """Canva-style AUTO-HEIGHT: keep the font fixed (max_size) and grow the
+        box height to fit the wrapped text at the current width — so narrowing the
+        width wraps the text and makes the box TALLER; the font never shrinks.
+        `top`/`bottom` anchor that edge while it grows; `min_h` lets a top/bottom
+        drag make the frame taller than the text."""
+        self.font.setPointSizeF(
+            max(self.FONT_MIN, min(self.max_size, self.FONT_MAX)))
+        cy = self.y() + self.h / 2
+        fm = QFontMetricsF(self.font)
         flags = int(Qt.AlignHCenter) | WRAP_FLAGS
-        r = fm.boundingRect(QRectF(0, 0, max(8.0, self.w), 1e7), flags, text)
-        return r.height() <= self.h - 2 and r.width() <= self.w + 0.5
-
-    def _refit(self):
-        """The BOX is the boss: pick the largest font (<= max_size) whose wrapped
-        text fits inside the current w×h. Letters shrink to fit and grow to fill,
-        but never spill outside the box. The box itself is NOT resized here."""
-        text = self.text or " "
-        cap = max(self.FONT_MIN, min(self.max_size, self.FONT_MAX))
-        lo, hi, fit = self.FONT_MIN, cap, self.FONT_MIN
-        if self._fits(text, cap):
-            fit = cap  # text already fits at the cap — use it, don't search
+        r = fm.boundingRect(
+            QRectF(0, 0, max(8.0, self.w), 1e7), flags, self.text or " ")
+        self.prepareGeometryChange()
+        self.h = max(8.0, r.height() + 6)
+        if min_h:
+            self.h = max(self.h, min_h)
+        if top is not None:
+            self.setY(top)
+        elif bottom is not None:
+            self.setY(bottom - self.h)
         else:
-            for _ in range(18):  # binary search for the largest fitting size
-                mid = (lo + hi) / 2
-                if self._fits(text, mid):
-                    fit, lo = mid, mid
-                else:
-                    hi = mid
-        self.font.setPointSizeF(fit)
+            self.setY(cy - self.h / 2)  # keep the vertical centre
         self.setTransformOriginPoint(self.w / 2, self.h / 2)
 
     def boundingRect(self) -> QRectF:
@@ -258,10 +253,11 @@ class TextBoxItem(QGraphicsItem):
             super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
-        """Every handle just RESIZES THE BOX (the boss). The font then auto-fits
-        inside it via _refit — letters shrink/grow, the box is what you set.
-        Corners also scale the font cap so dragging a corner sizes the letters
-        too (Canva-style); sides only reshape and let the font re-fit."""
+        """Canva-style resizing:
+        • corners scale the FONT (and width together); height auto-follows;
+        • left/right sides change only the WIDTH — the font stays, the text
+          wraps, and the box grows TALLER to fit;
+        • top/bottom set a manual height (a box taller than its text)."""
         if not self._resize:
             super().mouseMoveEvent(e)
             return
@@ -270,27 +266,34 @@ class TextBoxItem(QGraphicsItem):
         dx, dy = d.x(), d.y()
         k = self._resize
         MIN = 24.0
-        neww, newh, newx, newy = w0, h0, x0, y0
 
-        if k in ("r", "tr", "br"):
-            neww = max(MIN, w0 + dx)
-            newx = x0
-        elif k in ("l", "tl", "bl"):
-            neww = max(MIN, w0 - dx)
-            newx = x0 + (w0 - neww)
-        if k in ("b", "bl", "br"):
-            newh = max(MIN, h0 + dy)
-            newy = y0
-        elif k in ("t", "tl", "tr"):
-            newh = max(MIN, h0 - dy)
-            newy = y0 + (h0 - newh)
-
-        self.prepareGeometryChange()
-        self.w, self.h = neww, newh
-        self.setPos(newx, newy)
-        if k in ("tl", "tr", "bl", "br") and h0:  # corner -> scale the font cap
-            self.max_size = max(self.FONT_MIN, min(self.FONT_MAX, ms0 * newh / h0))
-        self._refit()
+        if k in ("tl", "tr", "bl", "br"):  # CORNER -> scale font + width
+            grow = dx if k in ("br", "tr") else -dx
+            scale = max(0.15, (w0 + grow) / w0) if w0 else 1.0
+            self.max_size = max(self.FONT_MIN, min(self.FONT_MAX, ms0 * scale))
+            self.prepareGeometryChange()
+            self.w = max(MIN, w0 * scale)
+            if k in ("bl", "tl"):
+                self.setX(x0 + (w0 - self.w))
+            else:
+                self.setX(x0)
+            self._refit(top=y0 if k in ("br", "bl") else None,
+                        bottom=(y0 + h0) if k in ("tr", "tl") else None)
+        elif k == "r":  # SIDE -> width only, font fixed, height auto-grows
+            self.prepareGeometryChange()
+            self.w = max(MIN, w0 + dx)
+            self.setX(x0)
+            self._refit(top=y0)
+        elif k == "l":
+            nw = max(MIN, w0 - dx)
+            self.prepareGeometryChange()
+            self.setX(x0 + (w0 - nw))
+            self.w = nw
+            self._refit(top=y0)
+        elif k == "b":  # bottom -> taller box (manual min height)
+            self._refit(top=y0, min_h=max(MIN, h0 + dy))
+        elif k == "t":
+            self._refit(bottom=y0 + h0, min_h=max(MIN, h0 - dy))
         self.update()
         e.accept()
 
