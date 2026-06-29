@@ -121,6 +121,24 @@ def download_via_gallery_dl(chapter_url: str, dest_dir: str) -> list[str]:
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     exts = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+
+    # PAGE ORDER: gallery-dl prints each file it writes, in download (page) order.
+    # Trust that — sorting by filename breaks when a site names pages with
+    # timestamps / random IDs (which is what scrambles the chapter order).
+    ordered, seen = [], set()
+    for line in (proc.stdout or "").splitlines():
+        p = line.strip().lstrip("# ").strip().strip('"')
+        if not p.lower().endswith(exts):
+            continue
+        cand = p if os.path.isfile(p) else os.path.join(
+            dest_dir, os.path.basename(p))
+        if os.path.isfile(cand) and cand not in seen:
+            ordered.append(cand)
+            seen.add(cand)
+    if ordered:
+        return ordered
+
+    # fallback only if we couldn't read the order from stdout
     imgs = [
         os.path.join(dest_dir, f)
         for f in os.listdir(dest_dir)

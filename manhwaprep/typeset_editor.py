@@ -1817,42 +1817,49 @@ class TypesetEditor(QWidget):
         targets = sorted(t for t in targets if 8 < t < H - 8)
         return targets or None
 
-    def _split_segment(self, seg) -> list[str]:
-        """Render the current canvas and cut it into FB panels at safe seams.
-        Text-box rects are forbidden zones (no line is ever sliced); story beats
-        (Claude grouping or heuristic) steer the cuts when available."""
+    def _slice_canvas(self, seg):
+        """Render the current canvas and compute safe panel slices (story beats
+        steer the cuts; text boxes are never sliced)."""
         from . import splitter
 
         bgr = self._qimage_to_bgr(self._render(seg))
         protect = [(it.y(), it.y() + it.h) for it in self.items]
         slices = splitter.split_panels(
             bgr, protect=protect, desired_cuts=self._story_cuts(seg))
-        out_dir = os.path.join(self.base, "fb_panels")
-        prefix = os.path.splitext(seg["image"])[0]  # canvas_001 -> canvas_001_NNN
-        return splitter.write_panels(bgr, slices, out_dir, prefix=prefix)
+        return bgr, slices
 
     def _export_fb(self):
-        paths = self._split_segment(self.segments[self.seg_idx])
+        from . import splitter
+
+        out_dir = os.path.join(self.base, "fb_panels")
+        splitter.clear_panels(out_dir)
+        bgr, slices = self._slice_canvas(self.segments[self.seg_idx])
+        paths = splitter.write_panels(bgr, slices, out_dir, "panel", 1)
         if not paths:
             QMessageBox.warning(self, "No panels", "Nothing to split.")
             return
         QMessageBox.information(
             self, "Facebook panels",
-            f"{len(paths)} panel(s) →\n{os.path.dirname(paths[0])}",
+            f"{len(paths)} panel(s) →\n{out_dir}",
         )
 
     def _export_fb_all(self):
+        from . import splitter
+
         self._commit_items()
-        total, folder = 0, None
+        out_dir = os.path.join(self.base, "fb_panels")
+        splitter.clear_panels(out_dir)
+        idx, total = 1, 0  # one continuous numbering across all canvases
         for i, seg in enumerate(self.segments):
+            self.seg_idx = i
             self._load_segment(i)
-            paths = self._split_segment(seg)
-            total += len(paths)
-            if paths:
-                folder = os.path.dirname(paths[0])
+            bgr, slices = self._slice_canvas(seg)
+            wrote = splitter.write_panels(bgr, slices, out_dir, "panel", idx)
+            idx += len(wrote)
+            total += len(wrote)
         QMessageBox.information(
             self, "Facebook panels",
-            f"{total} panel(s) across {len(self.segments)} canvas(es)\n→ {folder}",
+            f"{total} panel(s) across {len(self.segments)} canvas(es)\n→ {out_dir}",
         )
 
     def _save(self):

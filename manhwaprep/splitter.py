@@ -238,8 +238,11 @@ def split_source(
     if out_dir is None:
         root = os.path.dirname(images[0]) if os.path.isfile(source) else source
         out_dir = os.path.join(root, "fb_panels")
+    os.makedirs(out_dir, exist_ok=True)
+    clear_panels(out_dir)  # fresh sequence, no stale panels
 
     paths: list[str] = []
+    idx = 1  # one continuous numbering across all images
     for i, img_path in enumerate(images, 1):
         if control is not None:
             control.checkpoint()
@@ -255,8 +258,8 @@ def split_source(
                 for x1, y1, x2, y2 in boxes:
                     protect.append((y1, y2))
         slices = split_panels(im, protect=protect)
-        stem = os.path.splitext(os.path.basename(img_path))[0]
-        wrote = write_panels(im, slices, out_dir, prefix=stem)
+        wrote = write_panels(im, slices, out_dir, "panel", idx)
+        idx += len(wrote)
         paths.extend(wrote)
         if on_status:
             note = f" ({len(protect)} text region(s) protected)" if det else ""
@@ -268,28 +271,33 @@ def split_source(
     return out_dir, paths
 
 
-def write_panels(
-    image_bgr: np.ndarray,
-    slices: list[tuple[int, int]],
-    out_dir: str,
-    prefix: str = "panel",
-    quality: int = 92,
-) -> list[str]:
-    """Write each slice as a JPG; returns the written paths in order. Clears any
-    stale panels for this prefix first so a re-split never leaves old ones behind
-    (which would scramble the reading order)."""
+def clear_panels(out_dir: str, prefix: str = "panel") -> None:
+    """Remove existing <prefix>_NNN.jpg so a fresh export never mixes with an old
+    one (stale panels would scramble the reading order)."""
     import glob
 
-    os.makedirs(out_dir, exist_ok=True)
     for old in glob.glob(os.path.join(out_dir, f"{prefix}_[0-9]*.jpg")):
         try:
             os.remove(old)
         except OSError:
             pass
+
+
+def write_panels(
+    image_bgr: np.ndarray,
+    slices: list[tuple[int, int]],
+    out_dir: str,
+    prefix: str = "panel",
+    start: int = 1,
+    quality: int = 92,
+) -> list[str]:
+    """Write each slice as a JPG numbered <prefix>_<start..>.jpg (zero-padded to
+    4 digits so reading order always sorts right), continuing a global sequence
+    across canvases. Returns the written paths in order."""
+    os.makedirs(out_dir, exist_ok=True)
     paths = []
-    for i, (y0, y1) in enumerate(slices, 1):
-        crop = image_bgr[y0:y1]
-        path = os.path.join(out_dir, f"{prefix}_{i:03d}.jpg")
-        cv2.imwrite(path, crop, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    for n, (y0, y1) in enumerate(slices, start):
+        path = os.path.join(out_dir, f"{prefix}_{n:04d}.jpg")
+        cv2.imwrite(path, image_bgr[y0:y1], [cv2.IMWRITE_JPEG_QUALITY, quality])
         paths.append(path)
     return paths
