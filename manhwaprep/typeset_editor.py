@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -68,9 +69,9 @@ from PySide6.QtWidgets import (
 # Khmer wherever it must, so both fit and measure correctly.
 WRAP_FLAGS = int(Qt.TextWordWrap) | int(Qt.TextWrapAnywhere)
 
-# story-heuristic post sizing, as multiples of canvas width
-IDEAL_FB = 1.4
-MAX_FB = 2.5
+# story-heuristic post sizing, as multiples of canvas width (short, FB-friendly)
+IDEAL_FB = 1.0
+MAX_FB = 1.6
 
 _KHMER_FONT = None
 
@@ -668,6 +669,7 @@ class TypesetEditor(QWidget):
         self._inline_proxy = None
         self._inline_item = None
         self._post_groups = []  # Claude's story grouping: [(first_n, last_n), ...]
+        self._project_name = None  # user-given name shown in the home library
         # touch-up painting (blend / erase / paint) + undo history
         self._tool = "select"
         self._brush_size = 28
@@ -705,8 +707,9 @@ class TypesetEditor(QWidget):
             from . import recents
             thumb = (os.path.join(self.base, self.segments[0]["image"])
                      if self.segments else "")
-            recents.add_recent(self.layout_path,
-                               self.layout.get("chapter", ""), thumb)
+            name = (self._project_name or self.layout.get("chapter", "")
+                    or os.path.basename(self.base))
+            recents.add_recent(self.layout_path, name, thumb)
         except Exception:
             pass
 
@@ -1924,6 +1927,13 @@ class TypesetEditor(QWidget):
         )
 
     def _save(self):
+        default = (self._project_name or self.layout.get("chapter", "")
+                   or os.path.basename(self.base))
+        name, ok = QInputDialog.getText(
+            self, "Save project", "Project name:", text=default)
+        if not ok:
+            return
+        self._project_name = name.strip() or default
         self._commit_items()
         segs = []
         for s in self.segments:
@@ -1936,6 +1946,7 @@ class TypesetEditor(QWidget):
             segs.append(entry)
         proj = {
             "layout": os.path.basename(self.layout_path),
+            "name": self._project_name,
             "seg_idx": self.seg_idx,
             "post_groups": [list(g) for g in self._post_groups],
             "segments": segs,
@@ -1979,6 +1990,8 @@ class TypesetEditor(QWidget):
                 if arr is not None:
                     seg["_work_np"] = arr
         self._post_groups = [tuple(g) for g in proj.get("post_groups", [])]
+        if proj.get("name"):
+            self._project_name = proj["name"]
         if self.segments:
             self.seg_idx = min(max(0, int(proj.get("seg_idx", 0))),
                                len(self.segments) - 1)

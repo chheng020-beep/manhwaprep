@@ -23,9 +23,10 @@ import cv2
 import numpy as np
 
 # Facebook over-compresses extreme ratios, so cap each panel relative to width.
-MAX_RATIO = 2.5   # max panel height = 2.5 * width
-IDEAL_RATIO = 1.4
-MIN_RATIO = 0.6
+# Facebook feed favours portrait around 4:5; keep panels short, not long strips.
+MAX_RATIO = 1.6   # max panel height = 1.6 * width
+IDEAL_RATIO = 1.0
+MIN_RATIO = 0.4
 FORBID_MARGIN = 4  # px of breathing room kept around each text box
 ART_MIN = 0.012   # min fraction of non-text "drawn detail" for a panel to stand alone
 
