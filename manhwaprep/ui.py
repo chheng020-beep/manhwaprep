@@ -16,18 +16,17 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QProgressBar,
     QProgressDialog,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QTabWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -282,60 +281,50 @@ class MainWindow(QWidget):
         head.addWidget(refresh)
         v.addLayout(head)
 
-        self._proj_scroll = QScrollArea()
-        self._proj_scroll.setWidgetResizable(True)
-        self._proj_scroll.setFrameShape(QFrame.NoFrame)
-        self._proj_grid_host = QWidget()
-        self._proj_grid = QGridLayout(self._proj_grid_host)
-        self._proj_grid.setSpacing(12)
-        self._proj_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self._proj_scroll.setWidget(self._proj_grid_host)
-        v.addWidget(self._proj_scroll, 1)
+        self.proj_list = QListWidget()
+        self.proj_list.setIconSize(QSize(72, 52))
+        self.proj_list.setSpacing(2)
+        self.proj_list.itemClicked.connect(self._open_project_item)
+        v.addWidget(self.proj_list, 1)
         self._refresh_projects()
         return tab
 
     def _refresh_projects(self):
+        import time as _t
+
         from . import recents
 
-        # clear the grid
-        while self._proj_grid.count():
-            it = self._proj_grid.takeAt(0)
-            w = it.widget()
-            if w:
-                w.deleteLater()
+        self.proj_list.clear()
         entries = recents.list_recent()
         if not entries:
-            self._proj_grid.addWidget(
-                QLabel("No saved projects yet.\nRun a Typeset job, then Save "
-                       "project in the editor — it'll appear here."), 0, 0)
+            placeholder = QListWidgetItem(
+                "No saved projects yet — run a Typeset job, then Save project.")
+            placeholder.setFlags(Qt.NoItemFlags)
+            self.proj_list.addItem(placeholder)
             return
-        cols = 4
-        for i, e in enumerate(entries):
-            self._proj_grid.addWidget(self._make_project_card(e), i // cols, i % cols)
+        for e in entries:
+            name = e.get("chapter") or os.path.basename(
+                os.path.dirname(os.path.dirname(e.get("layout", ""))))
+            when = e.get("saved_at", 0)
+            ds = _t.strftime("%b %d, %H:%M", _t.localtime(when)) if when else ""
+            item = QListWidgetItem(f"{name}    ·  {ds}")
+            thumb = e.get("thumb", "")
+            if thumb and os.path.exists(thumb):
+                pm = QPixmap(thumb)
+                if not pm.isNull():
+                    side = min(pm.width(), pm.height())
+                    pm = pm.copy(0, 0, pm.width(), side).scaled(
+                        72, 52, Qt.KeepAspectRatioByExpanding,
+                        Qt.SmoothTransformation)
+                    item.setIcon(QIcon(pm))
+            item.setData(Qt.UserRole, e.get("layout"))
+            item.setToolTip(e.get("layout", ""))
+            self.proj_list.addItem(item)
 
-    def _make_project_card(self, entry: dict) -> QWidget:
-        btn = QToolButton()
-        btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        btn.setFixedSize(168, 184)
-        btn.setStyleSheet(
-            "QToolButton{border:1px solid #ccc;border-radius:10px;background:#fff;"
-            "padding:6px;} QToolButton:hover{border:1px solid #2d7ff9;}")
-        thumb = entry.get("thumb", "")
-        if thumb and os.path.exists(thumb):
-            pm = QPixmap(thumb)
-            if not pm.isNull():
-                side = min(pm.width(), pm.height())
-                pm = pm.copy(0, 0, pm.width(), side)  # square crop from the top
-                pm = pm.scaled(150, 120, Qt.KeepAspectRatioByExpanding,
-                               Qt.SmoothTransformation)
-                btn.setIcon(QIcon(pm))
-                btn.setIconSize(QSize(150, 120))
-        name = entry.get("chapter") or os.path.basename(
-            os.path.dirname(os.path.dirname(entry.get("layout", ""))))
-        btn.setText(name[:28])
-        btn.setToolTip(entry.get("layout", ""))
-        btn.clicked.connect(lambda _=False, p=entry.get("layout"): self._open_typeset(p))
-        return btn
+    def _open_project_item(self, item):
+        path = item.data(Qt.UserRole)
+        if path:
+            self._open_typeset(path)
 
     def _build_clean_tab(self) -> QWidget:
         tab = QWidget()
