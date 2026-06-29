@@ -195,15 +195,19 @@ def _merge_lonely(slices, gray, forbidden, min_h):
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
 
+def _natural_key(s: str):
+    import re
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
 def _gather_images(source: str) -> list[str]:
     if os.path.isfile(source):
         return [source]
     if os.path.isdir(source):
-        return [
-            os.path.join(source, f)
-            for f in sorted(os.listdir(source))
-            if f.lower().endswith(IMAGE_EXTS)
-        ]
+        # natural sort so 2.jpg comes before 10.jpg (lexical sort scrambles order)
+        files = [f for f in os.listdir(source) if f.lower().endswith(IMAGE_EXTS)]
+        files.sort(key=_natural_key)
+        return [os.path.join(source, f) for f in files]
     return []
 
 
@@ -271,8 +275,17 @@ def write_panels(
     prefix: str = "panel",
     quality: int = 92,
 ) -> list[str]:
-    """Write each slice as a JPG; returns the written paths in order."""
+    """Write each slice as a JPG; returns the written paths in order. Clears any
+    stale panels for this prefix first so a re-split never leaves old ones behind
+    (which would scramble the reading order)."""
+    import glob
+
     os.makedirs(out_dir, exist_ok=True)
+    for old in glob.glob(os.path.join(out_dir, f"{prefix}_[0-9]*.jpg")):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
     paths = []
     for i, (y0, y1) in enumerate(slices, 1):
         crop = image_bgr[y0:y1]
