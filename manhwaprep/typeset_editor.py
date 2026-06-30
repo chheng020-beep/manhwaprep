@@ -17,7 +17,8 @@ import sys
 import cv2
 import numpy as np
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, QSize, Qt
+from PySide6.QtCore import (
+    QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSize, Qt)
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -600,6 +601,8 @@ class _CanvasView(QGraphicsView):
             e.accept()
         else:
             super().wheelEvent(e)
+        if self.editor:
+            self.editor._position_box_bar()
 
 
 class _InlineEdit(QTextEdit):
@@ -698,9 +701,65 @@ class TypesetEditor(QWidget):
         root.addWidget(self.view, 4)
 
         root.addWidget(self._build_panel(), 0)
+        self._build_box_bar()  # floating quick-controls over the selected box
+        self.scene.changed.connect(self._position_box_bar)
+        self.view.horizontalScrollBar().valueChanged.connect(self._position_box_bar)
+        self.view.verticalScrollBar().valueChanged.connect(self._position_box_bar)
         self._load_project()  # offer to resume a saved project (sets seg_idx etc.)
         self._load_segment(self.seg_idx)
         self._register_recent()  # show this chapter on the home screen
+
+    def _build_box_bar(self):
+        """A small floating toolbar that hovers above the selected text box with
+        quick font sizes and 1/2/3-line options."""
+        bar = QWidget(self.view.viewport())
+        bar.setStyleSheet(
+            "QWidget{background:#2b2b2b;border-radius:8px;}"
+            "QToolButton{color:white;background:transparent;border:none;"
+            "padding:3px 6px;font-size:12px;}"
+            "QToolButton:hover{background:#454545;border-radius:4px;}"
+            "QLabel{color:#777;}")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(6, 3, 6, 3)
+        lay.setSpacing(1)
+        for sz in (25, 30, 35, 40):
+            b = QToolButton(); b.setText(str(sz))
+            b.setToolTip(f"Font size {sz}")
+            b.clicked.connect(lambda _=False, s=sz: self._set_size(s))
+            lay.addWidget(b)
+        lay.addWidget(QLabel("│"))
+        for n, lbl in ((1, "1·line"), (2, "2·line"), (3, "3·line")):
+            b = QToolButton(); b.setText(lbl)
+            b.setToolTip(f"Fit the text on {n} line(s)")
+            b.clicked.connect(lambda _=False, k=n: self._set_lines(k))
+            lay.addWidget(b)
+        bar.hide()
+        self._box_bar = bar
+
+    def _position_box_bar(self, *args):
+        bar = getattr(self, "_box_bar", None)
+        if bar is None:
+            return
+        try:
+            sel = self._selected()
+        except RuntimeError:
+            return  # scene torn down (window closing) — ignore
+        if len(sel) != 1 or self._tool != "select":
+            bar.hide()
+            return
+        it = sel[0]
+        bar.adjustSize()
+        vp = self.view.mapFromScene(QRectF(it.x(), it.y(), it.w, it.h).topLeft()
+                                    + QPointF(it.w / 2, 0))
+        bw, bh = bar.width(), bar.height()
+        x = max(2, min(int(vp.x() - bw / 2),
+                       self.view.viewport().width() - bw - 2))
+        y = int(vp.y()) - bh - 8
+        if y < 2:
+            y = int(vp.y()) + 8  # no room above -> tuck just below the top edge
+        bar.move(x, y)
+        bar.show()
+        bar.raise_()
 
     def _register_recent(self):
         try:
@@ -836,15 +895,6 @@ class TypesetEditor(QWidget):
         self.ow.valueChanged.connect(self._ow_changed)
         srow.addWidget(self.ow)
         tg.addLayout(srow)
-        # quick font-size presets
-        qrow = QHBoxLayout()
-        qrow.addWidget(QLabel("Quick"))
-        for sz in (25, 30, 35, 40):
-            b = QPushButton(str(sz))
-            b.setFixedWidth(38)
-            b.clicked.connect(lambda _=False, s=sz: self._set_size(s))
-            qrow.addWidget(b)
-        tg.addLayout(qrow)
         frow = QHBoxLayout()
         self.bold_btn = self._fmt_toggle("B", "font-weight:bold;", self._toggle_bold)
         self.italic_btn = self._fmt_toggle("I", "font-style:italic;", self._toggle_italic)
@@ -1087,6 +1137,7 @@ class TypesetEditor(QWidget):
     def _sync_panel(self):
         sel = self._selected()
         self.text_group.setVisible(bool(sel))  # only show text controls in context
+        self._position_box_bar()  # float the quick-controls over the selected box
         if not sel:
             return
         it = sel[0]
@@ -1146,6 +1197,35 @@ class TypesetEditor(QWidget):
         self.size.setValue(s)
         self.size.blockSignals(False)
         self._size_changed(s)
+
+    def _set_lines(self, n):
+        """Reflow the selected box(es) onto exactly n lines by widening/narrowing
+        the box (font stays the same; the box auto-heights)."""
+        for it in self._selected():
+            fm = QFontMetricsF(it.font)
+            text = it.text or " "
+            single = fm.horizontalAdvance(text) + 12  # width for one line
+            if n <= 1:
+                w = single
+            else:
+                # widest box still wrapping to >= n lines (so exactly n)
+                lo, hi, w = 24.0, max(24.0, single), 24.0
+                for _ in range(22):
+                    mid = (lo + hi) / 2
+                    r = fm.boundingRect(
+                        QRectF(0, 0, max(8.0, mid), 1e7),
+                        int(Qt.AlignHCenter) | WRAP_FLAGS, text)
+                    lines = max(1, round(r.height() / max(1.0, fm.lineSpacing())))
+                    if lines >= n:
+                        w, lo = mid, mid
+                    else:
+                        hi = mid
+            it.prepareGeometryChange()
+            it.w = max(24.0, w)
+            it._refit(top=it.y())
+            it.update()
+        self._record_if_changed()
+        self._position_box_bar()
 
     # -- inline (double-click) editing ---------------------------------
     def _start_inline_edit(self, item):
