@@ -20,3 +20,7 @@ token.txt
 bot.log
 
 .DS_Store
+
+# local user data
+recent_projects.json
+.cache/

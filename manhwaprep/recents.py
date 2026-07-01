@@ -38,6 +38,36 @@ def list_recent() -> list[dict]:
     return out
 
 
+def _fonts_path() -> str:
+    base = os.path.dirname(config.default_output_dir())
+    os.makedirs(base, exist_ok=True)
+    return os.path.join(base, "recent_fonts.json")
+
+
+def list_fonts() -> list[str]:
+    p = _fonts_path()
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            return [str(x) for x in json.load(f)]
+    except Exception:
+        return []
+
+
+def add_font(name: str) -> None:
+    """Push a font family to the front of the recently-used list."""
+    if not name:
+        return
+    data = [f for f in list_fonts() if f != name]
+    data.insert(0, name)
+    try:
+        with open(_fonts_path(), "w", encoding="utf-8") as f:
+            json.dump(data[:10], f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def add_recent(layout_path: str, chapter: str = "", thumb: str = "") -> None:
     """Record (or bump) a project. layout_path is the chapter's layout.json."""
     layout_path = os.path.abspath(layout_path)
