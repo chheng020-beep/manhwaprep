@@ -43,7 +43,10 @@ class Transcriber:
 
 _CLAUDE_PROMPT = (
     "Translate each numbered line below into natural Khmer for a manhwa. "
-    "Keep the numbers and the [bubble]/[sfx] tags, one line each."
+    "Keep the numbers and the [bubble]/[sfx] tags, one line each. "
+    "Wrap proper nouns (character names, place names, special terms and skill names) "
+    "in **double asterisks** in the Khmer output — e.g. **រ៉ានីយ៉ា** or **ព្រះអង្គ**. "
+    "Do NOT wrap common words, only names and unique terms."
 )
 
 

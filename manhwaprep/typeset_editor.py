@@ -1920,10 +1920,11 @@ class TypesetEditor(QWidget):
             hit = False
             for it in self.items:
                 if it.n in km:
-                    it.text = km[it.n]
-                    # If the Khmer text contains a Latin proper noun (e.g. a name
-                    # the translator left in Latin script), mark it bold+italic.
-                    if re.search(r'[A-Z][a-zA-Z]+', it.text or ""):
+                    raw = km[it.n] or ""
+                    # Detect **name** markers Claude adds for proper nouns.
+                    has_name = bool(re.search(r'\*\*[^*]+\*\*', raw))
+                    it.text = re.sub(r'\*\*([^*]+)\*\*', r'\1', raw)
+                    if has_name:
                         it.font.setBold(True)
                         it.font.setItalic(True)
                     it._refit()
