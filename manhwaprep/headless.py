@@ -51,8 +51,8 @@ def _pick_chapter_group(ordered_urls: list[str]) -> list[str]:
 
 
 def _ensure_chromium() -> None:
-    """Install Chromium on first use (needed on Windows after EXE install)."""
-    import subprocess, sys
+    """Install Chromium on first use (works inside PyInstaller EXE on Windows too)."""
+    import subprocess
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -61,10 +61,19 @@ def _ensure_chromium() -> None:
                 raise FileNotFoundError(exe)
     except Exception:
         print("[headless] Chromium not found — downloading (~150 MB, one-time)…")
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-        )
+        # sys.executable inside a PyInstaller EXE is the EXE itself, not python.
+        # Use playwright's own bundled driver binary instead.
+        try:
+            from playwright._impl._driver import compute_driver_executable
+            driver = str(compute_driver_executable())
+            subprocess.run([driver, "install", "chromium"], check=True)
+        except Exception:
+            # last resort: try the module route (works in normal Python installs)
+            import sys
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True,
+            )
 
 
 def _collect(url: str, timeout_ms: int = 90000) -> list[str]:

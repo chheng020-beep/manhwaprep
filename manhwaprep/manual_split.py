@@ -126,19 +126,14 @@ class CutLineItem(QGraphicsItem):
 
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
-        # clamp X=0, clamp Y within image
-        p = self.pos()
-        new_y = max(1.0, min(self._img_h - 1, p.y()))
-        self.setPos(0, new_y)
-        self.setToolTip(f"y: {int(new_y)} px  (double-click to delete)")
         self._scene_ref.cuts_changed.emit()
 
     def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionChange:
-            # keep x=0
-            if isinstance(value, QPointF):
-                value.setX(0)
-            return value
+        if change == QGraphicsItem.ItemPositionChange and isinstance(value, QPointF):
+            # clamp X=0, clamp Y inside image bounds
+            new_y = max(1.0, min(self._img_h - 1, value.y()))
+            self.setToolTip(f"y: {int(new_y)} px  (double-click to delete)")
+            return QPointF(0.0, new_y)
         return super().itemChange(change, value)
 
     def scene_y(self) -> float:
@@ -221,10 +216,11 @@ class ManualSplitView(QGraphicsView):
         self._scale = 1.0
 
     def wheelEvent(self, e):
-        if e.modifiers() & Qt.ControlModifier:
-            delta = e.angleDelta().y()
+        # Plain scroll = zoom (no Ctrl needed); Ctrl+scroll also works
+        delta = e.angleDelta().y()
+        if delta != 0:
             factor = 1.15 if delta > 0 else 1 / 1.15
-            new_scale = max(0.1, min(5.0, self._scale * factor))
+            new_scale = max(0.05, min(8.0, self._scale * factor))
             self.scale(new_scale / self._scale, new_scale / self._scale)
             self._scale = new_scale
             e.accept()
@@ -475,7 +471,9 @@ class ManualSplitWidget(QWidget):
         self._scene.setSceneRect(0, 0, self._img_w, self._img_h)
 
         self._view.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        self._view._scale = 1.0  # reset zoom tracking after fitInView
         self._view.setVisible(True)
+        self._view.setFocus()  # grab focus so scroll-to-zoom works immediately
         self._hint.setVisible(True)
         self._drop.setVisible(False)
         self._add_btn.setEnabled(True)
