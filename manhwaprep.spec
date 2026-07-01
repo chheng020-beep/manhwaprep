@@ -40,6 +40,9 @@ a = Analysis(
         "manhwaprep.ocr",
         "manhwaprep.batch",
         "manhwaprep.manual_split",
+        "manhwaprep.headless",
+        "playwright",
+        "playwright.sync_api",
         # rapidocr's runtime-imported helpers PyInstaller can miss
         "colorlog",
         "tqdm",
@@ -52,7 +55,7 @@ a = Analysis(
     # keep the build lean: translation + headless + unused ML stacks are out
     excludes=[
         "ctranslate2", "transformers", "torch", "sentencepiece",
-        "playwright", "tkinter", "matplotlib", "pandas", "PyQt5",
+        "tkinter", "matplotlib", "pandas", "PyQt5",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

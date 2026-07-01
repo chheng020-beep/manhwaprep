@@ -20,6 +20,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-windows.txt
           pip install pyinstaller
+          # Install playwright package so PyInstaller can bundle it.
+          # Chromium itself is NOT installed here — it downloads on first use
+          # on the end-user's machine via _ensure_chromium() in headless.py.
+          python -m playwright install-deps
 
       - name: Build .exe
         run: pyinstaller manhwaprep.spec

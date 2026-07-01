@@ -9,6 +9,7 @@ pillow
 requests
 beautifulsoup4
 gallery-dl
+playwright
 # typeset transcript OCR (PP-OCR via rapidocr) + its native geometry deps
 rapidocr==3.6.0
 shapely

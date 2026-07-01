@@ -50,7 +50,25 @@ def _pick_chapter_group(ordered_urls: list[str]) -> list[str]:
     return best if len(best) >= 2 else cands
 
 
+def _ensure_chromium() -> None:
+    """Install Chromium on first use (needed on Windows after EXE install)."""
+    import subprocess, sys
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            exe = p.chromium.executable_path
+            if not os.path.exists(exe):
+                raise FileNotFoundError(exe)
+    except Exception:
+        print("[headless] Chromium not found — downloading (~150 MB, one-time)…")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+        )
+
+
 def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
+    _ensure_chromium()
     from playwright.sync_api import sync_playwright
 
     network: list[str] = []
