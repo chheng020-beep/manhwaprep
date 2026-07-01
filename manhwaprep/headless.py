@@ -50,7 +50,7 @@ def _pick_chapter_group(ordered_urls: list[str]) -> list[str]:
     return best if len(best) >= 2 else cands
 
 
-def _collect(url: str, timeout_ms: int = 60000) -> list[str]:
+def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
     from playwright.sync_api import sync_playwright
 
     network: list[str] = []
@@ -68,32 +68,56 @@ def _collect(url: str, timeout_ms: int = 60000) -> list[str]:
                 pass
 
         page.on("response", on_response)
-        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        # networkidle catches sites (comix.to etc.) that finish XHR after DOM load
+        try:
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+        except Exception:
+            pass  # timeout is OK — we'll still collect what loaded
 
-        # scroll to bottom to trigger lazy-loading of all pages
+        # scroll to bottom in steps to trigger lazy-loaded images
         prev = -1
-        for _ in range(60):
-            page.mouse.wheel(0, 5000)
-            page.wait_for_timeout(350)
+        for _ in range(80):
+            page.mouse.wheel(0, 3000)
+            page.wait_for_timeout(300)
             h = page.evaluate("document.body.scrollHeight")
             if h == prev:
-                page.wait_for_timeout(800)
+                page.wait_for_timeout(1000)
                 if page.evaluate("document.body.scrollHeight") == prev:
                     break
             prev = h
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(2000)
 
+        # Collect img srcs: check currentSrc, src, AND data-src / data-original
+        # (comix.to uses data-src for lazy-loaded chapter images).
         dom = page.eval_on_selector_all(
-            "img", "els => els.map(e => e.currentSrc || e.src)"
+            "img",
+            """els => els.map(e =>
+                e.currentSrc ||
+                e.getAttribute('data-src') ||
+                e.getAttribute('data-original') ||
+                e.getAttribute('data-lazy-src') ||
+                e.src || ''
+            )"""
+        )
+        # Also grab any high-resolution src from picture/source elements
+        sources = page.eval_on_selector_all(
+            "source[srcset], source[data-srcset]",
+            """els => els.map(e => {
+                const s = e.getAttribute('srcset') || e.getAttribute('data-srcset') || '';
+                return s.split(',').map(x => x.trim().split(' ')[0]).filter(Boolean);
+            }).flat()"""
         )
         browser.close()
 
-    # Prefer DOM order (reading order); fall back to network if DOM is sparse.
+    # Prefer DOM order (reading order); supplement with network captures.
     dom = [u for u in dom if u and u.startswith("http")]
+    dom += [u for u in sources if u and u.startswith("http")]
     dom_pages = _pick_chapter_group(dom)
     if len(dom_pages) >= 3:
         return dom_pages
-    return _pick_chapter_group(network)
+    # Fall back to network order if DOM extraction was sparse
+    net_pages = _pick_chapter_group(network)
+    return net_pages if len(net_pages) >= len(dom_pages) else dom_pages
 
 
 def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:

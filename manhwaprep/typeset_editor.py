@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import cv2
@@ -78,13 +79,29 @@ _KHMER_FONT = None
 
 
 def khmer_font() -> str:
-    """Resolve a Khmer-capable font family, registering the bundled fonts so the
-    editor renders Khmer everywhere — macOS keeps 'Khmer Sangam MN', Windows/Linux
-    fall back to the bundled Hanuman (or a system Khmer font). Memoised; must be
-    called after a QApplication exists."""
+    """Resolve the default Khmer font, registering the bundled fonts first.
+    Prefers 'Kh Ang MuraFastHand' (if the user has installed it, or it's bundled),
+    then the bundled open handwriting font 'Fasthand' as a close fallback, then
+    other Khmer fonts. Memoised; must be called after a QApplication exists."""
     global _KHMER_FONT
     if _KHMER_FONT is not None:
         return _KHMER_FONT
+    # user-chosen default (written by "Set as default font" button)
+    _default_path = os.path.expanduser("~/ManhwaPrep/default_font.txt")
+    if os.path.exists(_default_path):
+        try:
+            _user_default = open(_default_path).read().strip()
+            if _user_default:
+                base0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
+                if os.path.isdir(base0):
+                    for fn0 in sorted(os.listdir(base0)):
+                        if fn0.lower().endswith((".ttf", ".otf")):
+                            QFontDatabase.addApplicationFont(os.path.join(base0, fn0))
+                if _user_default in set(QFontDatabase.families()):
+                    _KHMER_FONT = _user_default
+                    return _KHMER_FONT
+        except Exception:
+            pass
     registered = []
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
     if os.path.isdir(base):
@@ -92,11 +109,20 @@ def khmer_font() -> str:
             if fn.lower().endswith((".ttf", ".otf")):
                 fid = QFontDatabase.addApplicationFont(os.path.join(base, fn))
                 registered += QFontDatabase.applicationFontFamilies(fid)
-    fams = set(QFontDatabase.families())
-    for cand in ("Khmer Sangam MN", "Hanuman", *registered,
-                 "Khmer OS", "Leelawadee UI", "Khmer UI", "Noto Sans Khmer"):
-        if cand in fams:
-            _KHMER_FONT = cand
+    fams = list(QFontDatabase.families())
+    low = {f.lower(): f for f in fams}
+    # 1) the requested Kh Ang MuraFastHand, however it's spelled, if available
+    for f in fams:
+        fl = f.lower()
+        if "mura" in fl and "fast" in fl:
+            _KHMER_FONT = f
+            return f
+    # 2) preference chain — bundled open 'Fasthand' is the close handwriting match
+    for cand in ("Kh Ang MuraFastHand", "Fasthand", "Hanuman", *registered,
+                 "Khmer Sangam MN", "Khmer OS", "Leelawadee UI", "Khmer UI",
+                 "Noto Sans Khmer"):
+        if cand.lower() in low:
+            _KHMER_FONT = low[cand.lower()]
             return _KHMER_FONT
     _KHMER_FONT = registered[0] if registered else "Sans Serif"
     return _KHMER_FONT
@@ -129,7 +155,7 @@ class TextBoxItem(QGraphicsItem):
         # Canva model: the FONT is fixed (this size) and the box HEIGHT auto-grows
         # to fit the wrapped text. A corner drag or the Size box changes the font;
         # narrowing the width just wraps the text and makes the box taller.
-        self.max_size = max(12.0, min(self.FONT_MAX, h * 0.32))
+        self.max_size = 30.0
         self.fill = QColor(0, 0, 0)
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
@@ -626,17 +652,16 @@ class _InlineEdit(QTextEdit):
         self._on_done()
 
     def keyPressEvent(self, e):
-        # Enter commits the edit (it must NOT add a blank line — that extra line
-        # makes the box shrink the font to fit). Shift+Enter inserts a real line
-        # break; Esc also commits.
+        # Enter / Shift+Enter → insert a newline (multi-line editing).
+        # Ctrl/Cmd+Enter or Escape → commit.
         if e.key() == Qt.Key_Escape:
             self._on_done()
             return
-        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (
-            e.modifiers() & Qt.ShiftModifier
-        ):
-            self._on_done()
-            return
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+                self._on_done()
+                return
+            # plain Enter and Shift+Enter both insert a newline
         super().keyPressEvent(e)
 
 
@@ -881,10 +906,25 @@ class TypesetEditor(QWidget):
         self.text_edit.setFont(QFont(khmer_font(), 15))
         self.text_edit.textChanged.connect(self._text_changed)
         tg.addWidget(self.text_edit)
+        self.recent_fonts = QComboBox()
+        self.recent_fonts.setToolTip("Recently used fonts")
+        self.recent_fonts.activated.connect(self._recent_font_picked)
+        tg.addWidget(self.recent_fonts)
         self.fontbox = QFontComboBox()
         self.fontbox.setCurrentFont(QFont(khmer_font()))
         self.fontbox.currentFontChanged.connect(self._font_changed)
         tg.addWidget(self.fontbox)
+        self._refresh_recent_fonts()
+        self.apply_font_all_btn = QPushButton("Apply this font to ALL canvases")
+        self.apply_font_all_btn.setToolTip(
+            "Set every text box on every canvas to the font above")
+        self.apply_font_all_btn.clicked.connect(self._apply_font_all)
+        tg.addWidget(self.apply_font_all_btn)
+        self.default_font_btn = QPushButton("⭐ Set as default font")
+        self.default_font_btn.setToolTip(
+            "Save this font as the default for all new text boxes")
+        self.default_font_btn.clicked.connect(self._save_default_font)
+        tg.addWidget(self.default_font_btn)
         srow = QHBoxLayout()
         srow.addWidget(QLabel("Size"))
         self.size = QSpinBox(); self.size.setRange(6, 400); self.size.setValue(24)
@@ -1171,6 +1211,30 @@ class TypesetEditor(QWidget):
             it.update()
         self._record_if_changed()
 
+    def _refresh_recent_fonts(self):
+        from . import recents
+        self.recent_fonts.blockSignals(True)
+        self.recent_fonts.clear()
+        self.recent_fonts.addItem("Recent fonts…")
+        for f in recents.list_fonts():
+            self.recent_fonts.addItem(f)
+        self.recent_fonts.setCurrentIndex(0)
+        self.recent_fonts.blockSignals(False)
+
+    def _recent_font_picked(self, idx):
+        if idx <= 0:
+            return
+        fam = self.recent_fonts.itemText(idx)
+        self.fontbox.setCurrentFont(QFont(fam))  # triggers _font_changed
+
+    def _remember_font(self, fam):
+        try:
+            from . import recents
+            recents.add_font(fam)
+            self._refresh_recent_fonts()
+        except Exception:
+            pass
+
     def _font_changed(self, font):
         for it in self._selected():
             nf = QFont(font.family())
@@ -1178,7 +1242,53 @@ class TypesetEditor(QWidget):
             it.font = nf
             it._refit()
             it.update()
+        if self._selected():
+            self._remember_font(font.family())
         self._record_if_changed()
+
+    def _apply_font_all(self):
+        """Set the font (the one in the picker) on every text box across every
+        canvas — keeping each box's size and bold/italic/underline."""
+        fam = self.fontbox.currentFont().family()
+        self._commit_items()
+        cur = self.seg_idx
+        count = 0
+        for i in range(len(self.segments)):
+            self.seg_idx = i
+            self._load_segment(i)
+            for it in self.items:
+                nf = QFont(fam)
+                nf.setBold(it.font.bold())
+                nf.setItalic(it.font.italic())
+                nf.setUnderline(it.font.underline())
+                it.font = nf
+                it._refit()
+                it.update()
+                count += 1
+            if self.items:
+                self._commit_items()
+        self.seg_idx = cur
+        self._load_segment(cur)
+        self._remember_font(fam)
+        QMessageBox.information(
+            self, "Font applied",
+            f"Applied “{fam}” to {count} text box(es) across "
+            f"{len(self.segments)} canvas(es).")
+
+    def _save_default_font(self):
+        """Save the currently-selected font as the default for all new boxes."""
+        global _KHMER_FONT
+        fam = self.fontbox.currentFont().family()
+        path = os.path.expanduser("~/ManhwaPrep/default_font.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path, "w") as f:
+                f.write(fam)
+            _KHMER_FONT = None  # clear memo so next box picks up the new default
+            QMessageBox.information(self, "Default font saved",
+                                    f'"{fam}" is now the default font for new boxes.')
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not save default", str(exc))
 
     def _size_changed(self, v):
         # Set the font size; the box height auto-grows to fit (Canva-style).
@@ -1204,24 +1314,27 @@ class TypesetEditor(QWidget):
         for it in self._selected():
             fm = QFontMetricsF(it.font)
             text = it.text or " "
-            single = fm.horizontalAdvance(text) + 12  # width for one line
+            line_h = fm.height()
+            single_w = fm.horizontalAdvance(text) + 16
             if n <= 1:
-                w = single
+                w = single_w
             else:
-                # widest box still wrapping to >= n lines (so exactly n)
-                lo, hi, w = 24.0, max(24.0, single), 24.0
-                for _ in range(22):
+                # Binary-search: find narrowest width that still wraps to <= n lines
+                # using pixel height (reliable for Khmer which has no word-spaces).
+                lo, hi = 20.0, max(20.0, single_w)
+                for _ in range(24):
                     mid = (lo + hi) / 2
                     r = fm.boundingRect(
-                        QRectF(0, 0, max(8.0, mid), 1e7),
+                        QRectF(0, 0, mid, 1e7),
                         int(Qt.AlignHCenter) | WRAP_FLAGS, text)
-                    lines = max(1, round(r.height() / max(1.0, fm.lineSpacing())))
-                    if lines >= n:
-                        w, lo = mid, mid
-                    else:
+                    actual = r.height() / line_h if line_h > 0 else 1
+                    if actual <= n + 0.3:
                         hi = mid
+                    else:
+                        lo = mid
+                w = hi
             it.prepareGeometryChange()
-            it.w = max(24.0, w)
+            it.w = max(20.0, w)
             it._refit(top=it.y())
             it.update()
         self._record_if_changed()
@@ -1808,6 +1921,11 @@ class TypesetEditor(QWidget):
             for it in self.items:
                 if it.n in km:
                     it.text = km[it.n]
+                    # If the Khmer text contains a Latin proper noun (e.g. a name
+                    # the translator left in Latin script), mark it bold+italic.
+                    if re.search(r'[A-Z][a-zA-Z]+', it.text or ""):
+                        it.font.setBold(True)
+                        it.font.setItalic(True)
                     it._refit()
                     it.update()
                     filled += 1

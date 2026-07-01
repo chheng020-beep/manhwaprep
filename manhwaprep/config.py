@@ -96,7 +96,7 @@ def default_output_dir() -> str:
     if sys.platform == "win32":
         base = os.environ.get("USERPROFILE") or os.path.expanduser("~")
         return os.path.join(base, "ManhwaPrep", "output")
-    return os.path.expanduser("~/ManhwaPrep/output")
+    return os.path.expanduser("~/Desktop/ManhwaPrep/output")
 
 
 # Direct-download URLs (HuggingFace) for the models the app fetches on first run.
