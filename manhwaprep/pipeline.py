@@ -236,10 +236,11 @@ def run(
     return out_dir, outputs
 
 
-def run_for_batch(url: str, out_root: str) -> str | None:
-    """Run pipeline for one chapter URL. Returns output dir on success, None on failure."""
+def run_for_batch(url: str, out_root: str, cleaner=None) -> str | None:
+    """Run pipeline for one chapter URL, optionally reusing a pre-loaded cleaner.
+    Returns output dir on success, None on failure."""
     try:
-        out_dir, outputs = run(url, out_root=out_root)
+        out_dir, outputs = run(url, out_root=out_root, cleaner=cleaner)
         return out_dir if outputs else None
     except Exception:
         return None

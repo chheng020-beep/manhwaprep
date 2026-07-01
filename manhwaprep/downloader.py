@@ -113,10 +113,13 @@ def download_via_gallery_dl(chapter_url: str, dest_dir: str) -> list[str]:
     import sys
 
     os.makedirs(dest_dir, exist_ok=True)
+    _cache_dir = os.path.expanduser("~/ManhwaPrep/.cache/gallery-dl")
+    os.makedirs(_cache_dir, exist_ok=True)
     cmd = [
         sys.executable, "-m", "gallery_dl",
         "-D", dest_dir,                 # flat directory, no per-site subfolders
         "--no-part",
+        "--cache-file", os.path.join(_cache_dir, "cache.sqlite"),
         chapter_url,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)

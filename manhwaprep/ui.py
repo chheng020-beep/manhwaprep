@@ -148,12 +148,13 @@ class BatchWorker(QObject):
     done = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, url, start, count, out_dir):
+    def __init__(self, url, start, count, out_dir, inpaint="migan"):
         super().__init__()
         self.url = url
         self.start = start
         self.count = count
         self.out_dir = out_dir
+        self.inpaint = inpaint
         self._stop = False
 
     def stop(self):
@@ -161,12 +162,17 @@ class BatchWorker(QObject):
 
     def go(self):
         try:
+            # Load models ONCE — reused across every chapter in the batch.
+            self.progress.emit(0, self.count, "Loading models…")
+            cleaner = TextCleaner(inpaint=self.inpaint, include_sfx=True)
+            self.progress.emit(0, self.count,
+                               f"Models ready ({cleaner.backend}). Starting batch…")
             zips = batch_download(
                 self.url,
                 self.start,
                 self.count,
                 self.out_dir,
-                lambda url: run_for_batch(url, self.out_dir),
+                lambda url: run_for_batch(url, self.out_dir, cleaner=cleaner),
                 progress_cb=lambda i, n, msg: self.progress.emit(i, n, msg),
                 stop_flag=lambda: self._stop,
             )
@@ -896,6 +902,8 @@ def _ensure_models_or_quit(app) -> bool:
 
 def main():
     app = QApplication(sys.argv)
+    from PySide6.QtGui import QPixmapCache
+    QPixmapCache.setCacheLimit(256 * 1024)  # 256 MB (default ~10 MB)
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
     if os.path.exists(icon_path):
         from PySide6.QtGui import QIcon
