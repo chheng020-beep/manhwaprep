@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from .batch import batch_download, detect_chapter
 from .control import Control, PipelineStopped
 from .engine import TextCleaner
+from .manual_split import ManualSplitWidget
 from .pipeline import run, run_for_batch
 
 
@@ -101,41 +102,6 @@ class Worker(QObject):
                 on_progress=lambda s, d, t: self.progress.emit(s, d, t),
             )
             self.done.emit(out_dir, outputs)
-        except PipelineStopped:
-            self.stopped.emit()
-        except Exception as e:
-            traceback.print_exc()
-            self.failed.emit(str(e))
-
-
-class SplitWorker(QObject):
-    """Standalone Facebook-panel splitter: split a dropped image / folder of
-    images at safe seams. No download, no cleaning."""
-
-    status = Signal(str)
-    progress = Signal(str, int, int)
-    done = Signal(str, list)
-    failed = Signal(str)
-    stopped = Signal()
-
-    def __init__(self, source: str, detect: bool, control):
-        super().__init__()
-        self.source = source
-        self.detect = detect
-        self.control = control
-
-    def go(self):
-        try:
-            from . import splitter
-
-            out_dir, paths = splitter.split_source(
-                self.source,
-                detect=self.detect,
-                on_status=self.status.emit,
-                on_progress=lambda s, d, t: self.progress.emit(s, d, t),
-                control=self.control,
-            )
-            self.done.emit(out_dir, paths)
         except PipelineStopped:
             self.stopped.emit()
         except Exception as e:
@@ -241,13 +207,12 @@ class MainWindow(QWidget):
         # Pick the job up top; each tab keeps its own settings so you never
         # re-toggle anything to do a different task.
         self.tabs = QTabWidget()
-        self._split_source = None
         self._projects_tab = self._build_projects_tab()
         self._clean_tab = self._build_clean_tab()
-        self._split_tab = self._build_split_tab()
+        self._split_tab = ManualSplitWidget()
         self.tabs.addTab(self._projects_tab, "🗂 Projects")
         self.tabs.addTab(self._clean_tab, "🧹 Clean & Prepare")
-        self.tabs.addTab(self._split_tab, "✂️ Split for Facebook")
+        self.tabs.addTab(self._split_tab, "✂️ Manual Split")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self.tabs)
 
@@ -513,65 +478,24 @@ class MainWindow(QWidget):
         cl.addStretch(1)
         return tab
 
-    def _build_split_tab(self) -> QWidget:
-        tab = QWidget()
-        sl = QVBoxLayout(tab)
-        sl.setSpacing(10)
-
-        self.split_drop = DropZone(
-            "Drop an image (or a folder of images) to slice into Facebook panels",
-            files_ok=True,
-        )
-        self.split_drop.dropped.connect(self._on_split_drop)
-        sl.addWidget(self.split_drop)
-
-        sbrowse = QPushButton("…or choose an image")
-        sbrowse.clicked.connect(self._browse_split_file)
-        sl.addWidget(sbrowse)
-
-        p_row = QHBoxLayout()
-        p_row.addWidget(QLabel("Text safety:"))
-        self.protect = QComboBox()
-        self.protect.addItem("Auto-detect & avoid text (safe, slower)", True)
-        self.protect.addItem("Gutter cuts only (fast, for clean images)", False)
-        p_row.addWidget(self.protect)
-        p_row.addStretch(1)
-        sl.addLayout(p_row)
-
-        hint = QLabel(
-            "Cuts land on safe gutters — never through a speech bubble or the "
-            "middle of a panel. Panels are saved to an 'fb_panels' folder next "
-            "to your image."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#777;")
-        sl.addWidget(hint)
-
-        sl.addStretch(1)
-        return tab
-
     def _on_tab_changed(self, idx: int):
-        # Go means different things per tab; the Projects tab has no Go action.
         w = self.tabs.currentWidget()
         on_projects = w is self._projects_tab
-        self.go.setEnabled(not on_projects)
-        self.go.setText("Split for Facebook" if w is self._split_tab else "Go")
+        on_manual_split = w is self._split_tab
+        # Manual Split tab has its own controls — hide the global Go/Pause/Stop bar
+        self.go.setVisible(not on_manual_split)
+        self.pause_btn.setVisible(not on_manual_split)
+        self.stop_btn.setVisible(not on_manual_split)
+        self.bar.setVisible(not on_manual_split)
+        self.go.setEnabled(not on_projects and not on_manual_split)
         if on_projects:
-            self._refresh_projects()  # pick up anything saved since opening
+            self._refresh_projects()
 
     # -- actions -------------------------------------------------------
     def _browse(self):
         path = QFileDialog.getExistingDirectory(self, "Choose chapter folder")
         if path:
             self._on_clean_drop(path)
-
-    def _browse_split_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose an image to split", os.path.expanduser("~"),
-            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
-        )
-        if path:
-            self._on_split_drop(path)
 
     def _on_url_changed(self, text: str):
         n, _ = detect_chapter(text.strip())
@@ -659,18 +583,8 @@ class MainWindow(QWidget):
         self.url.clear()
         self._start_clean(path)
 
-    def _on_split_drop(self, path: str):
-        self._split_source = path
-        self._start_split(path)
-
     def _on_go(self):
         if self.tabs.currentWidget() is self._projects_tab:
-            return
-        if self.tabs.currentWidget() is self._split_tab:
-            if self._split_source:
-                self._start_split(self._split_source)
-            else:
-                self._append("Drop an image or folder in the Split tab first.")
             return
         src = self.url.text().strip()
         if not src:
@@ -692,11 +606,6 @@ class MainWindow(QWidget):
         )
         self._begin(source, worker,
                     typeset_active=bool(self.typeset and self.typeset.currentData()))
-
-    def _start_split(self, source: str):
-        self._control = Control()
-        worker = SplitWorker(source, bool(self.protect.currentData()), self._control)
-        self._begin(source, worker, typeset_active=False)
 
     def _begin(self, source: str, worker, typeset_active: bool = False):
         """Shared run lifecycle: lock the UI, start the timer, run the worker
