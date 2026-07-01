@@ -64,12 +64,14 @@ class CutLineItem(QGraphicsItem):
         self._hovered = False
         self._number = 1
 
-        self.setPos(0, y)
+        # Set flags BEFORE setPos so itemChange fires and clamps on creation
         self.setFlags(
             QGraphicsItem.ItemIsMovable |
             QGraphicsItem.ItemIsSelectable |
             QGraphicsItem.ItemSendsScenePositionChanges
         )
+        y = max(1.0, min(img_h - 1, y))
+        self.setPos(0, y)
         self.setAcceptHoverEvents(True)
         self.setCursor(QCursor(Qt.SizeVerCursor))
         self.setZValue(10)
@@ -173,6 +175,7 @@ class ManualSplitScene(QGraphicsScene):
         super().mousePressEvent(e)
 
     def _add_line(self, y: float):
+        y = max(1.0, min(self._img_h - 1, y))
         line = CutLineItem(y, self._img_w, self._img_h, self)
         self.addItem(line)
         self._lines.append(line)
