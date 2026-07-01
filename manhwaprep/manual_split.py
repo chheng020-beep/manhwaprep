@@ -149,6 +149,13 @@ class ManualSplitScene(QGraphicsScene):
         self._img_w = 0.0
         self._img_h = 0.0
 
+    def reset(self, w: float, h: float):
+        """Clear all items AND the tracked line list, then set new image size."""
+        self._lines.clear()
+        self.clear()  # QGraphicsScene.clear() — removes all QGraphicsItems
+        self._img_w = w
+        self._img_h = h
+
     def set_image_size(self, w: float, h: float):
         self._img_w = w
         self._img_h = h
@@ -209,20 +216,20 @@ class ManualSplitView(QGraphicsView):
         self.setRenderHint(QPainter.Antialiasing)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(QCursor(Qt.CrossCursor))
         self._panning = False
         self._pan_start = None
         self._space_held = False
-        self._scale = 1.0
 
     def wheelEvent(self, e):
-        # Plain scroll = zoom (no Ctrl needed); Ctrl+scroll also works
+        # Scroll = zoom (reads actual transform so fitInView baseline is respected)
         delta = e.angleDelta().y()
         if delta != 0:
             factor = 1.15 if delta > 0 else 1 / 1.15
-            new_scale = max(0.05, min(8.0, self._scale * factor))
-            self.scale(new_scale / self._scale, new_scale / self._scale)
-            self._scale = new_scale
+            current = self.transform().m11()  # actual current scale
+            new_scale = max(0.05, min(8.0, current * factor))
+            self.scale(new_scale / current, new_scale / current)
             e.accept()
         else:
             super().wheelEvent(e)
@@ -462,18 +469,20 @@ class ManualSplitWidget(QWidget):
 
         self._img_w = pm.width()
         self._img_h = pm.height()
-        self._scene.clear()
-        self._scene.set_image_size(float(self._img_w), float(self._img_h))
+
+        # reset() clears _lines list AND calls QGraphicsScene.clear() together
+        # so no stale C++ item references remain
+        self._scene.reset(float(self._img_w), float(self._img_h))
 
         pix_item = QGraphicsPixmapItem(pm)
         pix_item.setZValue(0)
         self._scene.addItem(pix_item)
         self._scene.setSceneRect(0, 0, self._img_w, self._img_h)
 
+        self._view.resetTransform()  # clear any previous zoom before fitInView
         self._view.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
-        self._view._scale = 1.0  # reset zoom tracking after fitInView
         self._view.setVisible(True)
-        self._view.setFocus()  # grab focus so scroll-to-zoom works immediately
+        self._view.setFocus()
         self._hint.setVisible(True)
         self._drop.setVisible(False)
         self._add_btn.setEnabled(True)

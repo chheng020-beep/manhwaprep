@@ -65,8 +65,9 @@ def _ensure_chromium() -> None:
         # Use playwright's own bundled driver binary instead.
         try:
             from playwright._impl._driver import compute_driver_executable
-            driver = str(compute_driver_executable())
-            subprocess.run([driver, "install", "chromium"], check=True)
+            # returns (node_exe, cli_js) — run as: node cli.js install chromium
+            node, cli = compute_driver_executable()
+            subprocess.run([str(node), str(cli), "install", "chromium"], check=True)
         except Exception:
             # last resort: try the module route (works in normal Python installs)
             import sys
