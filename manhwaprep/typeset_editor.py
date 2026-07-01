@@ -20,7 +20,10 @@ import numpy as np
 
 from PySide6.QtCore import (
     QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSize, Qt)
+import math
+
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QFont,
     QFontDatabase,
@@ -28,7 +31,9 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QKeySequence,
+    QLinearGradient,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QTextCursor,
@@ -59,6 +64,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTextEdit,
     QToolButton,
@@ -70,6 +76,110 @@ from PySide6.QtWidgets import (
 # unbreakable line. WrapAtWordBoundaryOrAnywhere wraps English at spaces and
 # Khmer wherever it must, so both fit and measure correctly.
 WRAP_FLAGS = int(Qt.TextWordWrap) | int(Qt.TextWrapAnywhere)
+
+# ── Luxe dark theme ──────────────────────────────────────────────────────────
+_DARK_BG   = "#1a1a1f"
+_PANEL_BG  = "#22222a"
+_CARD_BG   = "#2a2a35"
+_ACCENT    = "#a78bfa"
+_ACCENT2   = "#f472b6"
+_TEXT_MAIN = "#f1f0f5"
+_TEXT_DIM  = "#6b6b80"
+_BORDER    = "#333342"
+
+_SIDEBAR_QSS = f"""
+QWidget {{ background: {_DARK_BG}; color: {_TEXT_MAIN}; font-size: 12px; }}
+QGroupBox {{
+    border: 1px solid {_BORDER}; border-radius: 8px;
+    margin-top: 10px; padding: 8px; color: {_TEXT_DIM}; font-size: 11px;
+}}
+QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; }}
+QPushButton {{
+    background: {_CARD_BG}; color: {_TEXT_MAIN}; border: 1px solid {_BORDER};
+    border-radius: 8px; padding: 5px 10px; font-size: 12px;
+}}
+QPushButton:hover {{ background: #363645; border-color: {_ACCENT}; }}
+QPushButton:pressed {{ background: {_ACCENT}; color: white; }}
+QPushButton:checked {{ background: {_ACCENT}; color: white; border-color: {_ACCENT}; }}
+QToolButton {{
+    background: {_CARD_BG}; color: {_TEXT_MAIN}; border: 1px solid {_BORDER};
+    border-radius: 6px; padding: 4px 8px; font-size: 12px;
+}}
+QToolButton:hover {{ background: #363645; border-color: {_ACCENT}; }}
+QToolButton:checked {{ background: {_ACCENT}; color: white; border-color: {_ACCENT}; }}
+QComboBox {{
+    background: {_CARD_BG}; color: {_TEXT_MAIN}; border: 1px solid {_BORDER};
+    border-radius: 6px; padding: 4px 8px;
+}}
+QComboBox::drop-down {{ border: none; }}
+QSpinBox {{
+    background: {_CARD_BG}; color: {_TEXT_MAIN}; border: 1px solid {_BORDER};
+    border-radius: 6px; padding: 3px 6px;
+}}
+QLabel {{ color: {_TEXT_DIM}; background: transparent; }}
+QPlainTextEdit, QTextEdit {{
+    background: {_CARD_BG}; color: {_TEXT_MAIN}; border: 1px solid {_BORDER};
+    border-radius: 6px;
+}}
+QScrollArea {{ border: none; background: {_DARK_BG}; }}
+QListWidget {{
+    background: {_CARD_BG}; border: 1px solid {_BORDER}; border-radius: 6px;
+}}
+QFrame[frameShape="4"] {{ color: {_BORDER}; }}
+"""
+
+# ── Gradient presets ──────────────────────────────────────────────────────────
+GRADIENT_PRESETS = {
+    "Manhwa": [
+        ["#FF6B9D", "#8B5CF6"],
+        ["#DC143C", "#1a0a0a"],
+        ["#C084FC", "#818CF8", "#BAE6FD"],
+        ["#FB7185", "#FBBF24"],
+        ["#3B82F6", "#06B6D4"],
+        ["#991B1B", "#000000"],
+        ["#FEF3C7", "#FBCFE8"],
+        ["#2563EB", "#1E3A5F"],
+        ["#F59E0B", "#92400E"],
+        ["#0F0C29", "#302B63", "#24243E"],
+        ["#FFFFFF", "#C0C0C0"],
+        ["#FF0080", "#7928CA"],
+    ],
+    "Basics": [
+        ["#000000", "#FFFFFF"],
+        ["#FFFFFF", "#000000"],
+        ["#000000", "#434343"],
+        ["#808080", "#000000"],
+        ["#434343", "#000000"],
+        ["#FFFFFF", "#F0F0F0"],
+    ],
+    "Blues": [
+        ["#0575E6", "#021B79"],
+        ["#00C6FF", "#0072FF"],
+        ["#4facfe", "#00f2fe"],
+        ["#a1c4fd", "#c2e9fb"],
+        ["#667eea", "#764ba2"],
+        ["#0052D4", "#4364F7", "#6FB1FC"],
+    ],
+    "Pinks": [
+        ["#f953c6", "#b91d73"],
+        ["#ee0979", "#ff6a00"],
+        ["#ffecd2", "#fcb69f"],
+        ["#ff9a9e", "#fecfef"],
+        ["#f6d365", "#fda085"],
+        ["#fbc2eb", "#a6c1ee"],
+        ["#fddb92", "#d1fdff"],
+        ["#a18cd1", "#fbc2eb"],
+        ["#fad0c4", "#ffd1ff"],
+    ],
+    "Purples": [
+        ["#a18cd1", "#fbc2eb"],
+        ["#764ba2", "#667eea"],
+        ["#6a3093", "#a044ff"],
+        ["#c471ed", "#f64f59"],
+        ["#7b4397", "#dc2430"],
+        ["#360033", "#0b8793"],
+    ],
+}
 
 # story-heuristic post sizing, as multiples of canvas width (short, FB-friendly)
 IDEAL_FB = 0.8
@@ -160,6 +270,10 @@ class TextBoxItem(QGraphicsItem):
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
         self.align = Qt.AlignHCenter | Qt.AlignVCenter
+        self.gradient_colors = None   # list[str] hex colors, or None for solid fill
+        self.gradient_angle = 90.0    # degrees: 0=L→R, 90=T→B
+        self.effect = "none"          # none|drop|glow|echo|background|hollow|neon
+        self.effect_color = "#000000"
         self.on_edit = None  # set by the editor: callback(item) for inline edit
         self._editing = False  # True while the inline editor overlays this box
         self.setFlags(
@@ -233,26 +347,119 @@ class TextBoxItem(QGraphicsItem):
                 return "b"
         return None
 
+    def _make_gradient(self, rect: QRectF) -> QLinearGradient | None:
+        if not self.gradient_colors or len(self.gradient_colors) < 2:
+            return None
+        angle = math.radians(self.gradient_angle)
+        cx, cy = rect.center().x(), rect.center().y()
+        hw = rect.width() / 2 * abs(math.cos(angle)) + rect.height() / 2 * abs(math.sin(angle))
+        hh = rect.width() / 2 * abs(math.sin(angle)) + rect.height() / 2 * abs(math.cos(angle))
+        start = QPointF(cx - hw * math.cos(angle), cy - hh * math.sin(angle))
+        end   = QPointF(cx + hw * math.cos(angle), cy + hh * math.sin(angle))
+        g = QLinearGradient(start, end)
+        for i, c in enumerate(self.gradient_colors):
+            g.setColorAt(i / (len(self.gradient_colors) - 1), QColor(c))
+        return g
+
+    def _draw_gradient_text(self, p: QPainter, r: QRectF, flags: int) -> None:
+        """Draw text with a gradient fill using QImage alpha compositing."""
+        g = self._make_gradient(r)
+        if g is None:
+            return
+        iw, ih = max(1, int(r.width())), max(1, int(r.height()))
+        # 1. Render text as white-on-transparent mask
+        mask = QImage(iw, ih, QImage.Format_ARGB32_Premultiplied)
+        mask.fill(Qt.transparent)
+        mp = QPainter(mask)
+        mp.setFont(self.font)
+        mp.setPen(QColor(255, 255, 255, 255))
+        mp.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+        mp.drawText(QRectF(0, 0, iw, ih), flags, self.text or "")
+        mp.end()
+        # 2. Fill gradient onto solid image
+        grad_img = QImage(iw, ih, QImage.Format_ARGB32_Premultiplied)
+        grad_img.fill(Qt.transparent)
+        gp = QPainter(grad_img)
+        gp.fillRect(0, 0, iw, ih, QBrush(g))
+        gp.end()
+        # 3. Mask gradient by text alpha (DestinationIn = keep dst where src is opaque)
+        gp2 = QPainter(grad_img)
+        gp2.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        gp2.drawImage(0, 0, mask)
+        gp2.end()
+        # 4. Composite onto scene
+        p.drawImage(r.topLeft(), grad_img)
+
     def paint(self, p, opt, widget=None):
         r = QRectF(0, 0, self.w, self.h)
         if self._editing:
             return  # the inline overlay draws the text in our place (WYSIWYG)
         p.save()
-        p.setClipRect(r)  # text can never render outside the box
+        p.setClipRect(r)
         p.setFont(self.font)
         flags = int(self.align) | WRAP_FLAGS
-        # Keep the halo proportional to the text so it stays readable on dark
-        # art even at large sizes (a fixed 3px ring vanishes behind big glyphs),
-        # but cap it — the outline costs (2·ow+1)² drawText calls per box.
+        ec = QColor(self.effect_color)
+
+        # ── Effects: pre-pass (rendered before main text) ─────────────────
+        eff = self.effect
+        if eff == "background" and self.text:
+            bg = QColor(ec); bg.setAlpha(180)
+            p.setBrush(bg); p.setPen(Qt.NoPen)
+            p.drawRoundedRect(r, 8, 8)
+        if eff == "drop" and self.text:
+            shadow = QColor(0, 0, 0, 120)
+            p.setPen(shadow)
+            p.drawText(r.translated(3, 3), flags, self.text)
+        if eff == "echo" and self.text:
+            echo_c = QColor(self.fill); echo_c.setAlpha(80)
+            p.setPen(echo_c)
+            p.drawText(r.translated(4, 4), flags, self.text)
+        if eff == "glow" and self.text:
+            for gx, gy in ((-2,0),(2,0),(0,-2),(0,2),(-1,-1),(1,-1),(-1,1),(1,1)):
+                gc = QColor(ec); gc.setAlpha(60)
+                p.setPen(gc)
+                p.drawText(r.translated(gx, gy), flags, self.text)
+        if eff == "neon" and self.text:
+            for alpha, offs in ((40, 3), (60, 2), (80, 1)):
+                for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs)):
+                    gc = QColor(ec); gc.setAlpha(alpha)
+                    p.setPen(gc)
+                    p.drawText(r.translated(gx, gy), flags, self.text)
+
+        # ── Outline (white halo, or explicit outline effect) ───────────────
         ow = min(12, max(self.outline_w, round(self.font.pointSizeF() * 0.10)))
-        if ow > 0 and self.text:
+        if eff == "outline":
+            ow = max(ow, 3)
+        if ow > 0 and self.text and eff != "hollow":
             p.setPen(self.outline)
             for dx in range(-ow, ow + 1):
                 for dy in range(-ow, ow + 1):
                     if (dx or dy) and dx * dx + dy * dy <= ow * ow:
                         p.drawText(r.translated(dx, dy), flags, self.text)
-        p.setPen(self.fill)
-        p.drawText(r, flags, self.text)
+
+        # ── Main text fill ─────────────────────────────────────────────────
+        if eff == "hollow" and self.text:
+            # stroke-only: build path and stroke it
+            path = QPainterPath()
+            fm = QFontMetricsF(self.font)
+            lh = fm.lineSpacing()
+            total_h = fm.boundingRect(QRectF(0, 0, self.w, 1e7), flags, self.text).height()
+            y0 = max(fm.ascent(), (self.h - total_h) / 2 + fm.ascent())
+            for line in (self.text or "").split("\n") or [""]:
+                lw = fm.horizontalAdvance(line)
+                ha = int(self.align) & (int(Qt.AlignLeft)|int(Qt.AlignHCenter)|int(Qt.AlignRight))
+                x0 = (self.w - lw)/2 if ha == int(Qt.AlignHCenter) else (
+                    self.w - lw if ha == int(Qt.AlignRight) else 0.0)
+                path.addText(x0, y0, self.font, line)
+                y0 += lh
+            pen = QPen(self.fill, max(1, ow)); pen.setJoinStyle(Qt.RoundJoin)
+            p.strokePath(path, pen)
+        elif self.gradient_colors:
+            self._draw_gradient_text(p, r, flags)
+        else:
+            p.setPen(self.fill)
+            p.drawText(r, flags, self.text)
+
         p.restore()
         if self.isSelected():
             pen = QPen(QColor(0, 150, 255))
@@ -350,6 +557,10 @@ class TextBoxItem(QGraphicsItem):
             "bold": self.font.bold(), "italic": self.font.italic(),
             "underline": self.font.underline(), "align": int(self.align),
             "rot": self.rotation(),
+            "gradient_colors": self.gradient_colors,
+            "gradient_angle": self.gradient_angle,
+            "effect": self.effect,
+            "effect_color": self.effect_color,
         }
 
 
@@ -683,6 +894,225 @@ class PasteDialog(QDialog):
         return self.edit.toPlainText()
 
 
+class _GradientSwatch(QPushButton):
+    def __init__(self, colors, callback):
+        super().__init__()
+        self.colors = colors
+        self.setFixedSize(64, 40)
+        self.setFlat(True)
+        self.setToolTip(" → ".join(colors))
+        self.clicked.connect(callback)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("border-radius:6px; border:1px solid #333342;")
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(1, 1, -1, -1)
+        g = QLinearGradient(r.left(), 0, r.right(), 0)
+        for i, c in enumerate(self.colors):
+            g.setColorAt(i / (len(self.colors) - 1), QColor(c))
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(r), 5, 5)
+        p.fillPath(path, QBrush(g))
+        p.end()
+
+
+class _GradientPanel(QWidget):
+    """Collapsible gradient preset picker with angle slider."""
+    gradient_picked = None  # set by TypesetEditor after construction
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        # Angle row
+        angle_row = QHBoxLayout()
+        angle_row.addWidget(QLabel("Angle"))
+        self._angle_slider = QSlider(Qt.Horizontal)
+        self._angle_slider.setRange(0, 360)
+        self._angle_slider.setValue(90)
+        self._angle_lbl = QLabel("90°")
+        self._angle_lbl.setFixedWidth(34)
+        self._angle_slider.valueChanged.connect(
+            lambda v: self._angle_lbl.setText(f"{v}°"))
+        angle_row.addWidget(self._angle_slider, 1)
+        angle_row.addWidget(self._angle_lbl)
+        lay.addLayout(angle_row)
+
+        # Clear button
+        clear_btn = QPushButton("✕ Clear gradient")
+        clear_btn.clicked.connect(lambda: self.gradient_picked and
+                                  self.gradient_picked(None, 90))
+        lay.addWidget(clear_btn)
+
+        # Scrollable preset grid
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedHeight(260)
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setSpacing(4)
+        inner_lay.setContentsMargins(0, 0, 4, 0)
+
+        self._sections = {}
+        for cat, presets in GRADIENT_PRESETS.items():
+            # Header button (expand/collapse)
+            hdr = QPushButton(f"▾  {cat}")
+            hdr.setStyleSheet(
+                f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
+                f"border-left:3px solid {_ACCENT};border-radius:4px;"
+                f"padding:4px 8px;text-align:left;font-weight:bold;}}"
+                f"QPushButton:hover{{background:#363645;}}")
+            grid_w = QWidget()
+            grid_lay = QHBoxLayout(grid_w)
+            grid_lay.setSpacing(4)
+            grid_lay.setContentsMargins(0, 2, 0, 2)
+            # 3-column flow
+            col_widgets = [QVBoxLayout() for _ in range(3)]
+            for j, colors in enumerate(presets):
+                def _cb(c=colors):
+                    if self.gradient_picked:
+                        self.gradient_picked(c, self._angle_slider.value())
+                swatch = _GradientSwatch(colors, _cb)
+                col_widgets[j % 3].addWidget(swatch)
+            for cw in col_widgets:
+                cw.addStretch()
+                w = QWidget(); w.setLayout(cw)
+                grid_lay.addWidget(w)
+
+            self._sections[cat] = grid_w
+            hdr.clicked.connect(lambda _, gw=grid_w, b=hdr: (
+                gw.setVisible(not gw.isVisible()),
+                b.setText(("▾  " if not gw.isVisible() else "▸  ") + b.text()[3:])
+            ))
+            inner_lay.addWidget(hdr)
+            inner_lay.addWidget(grid_w)
+
+        inner_lay.addStretch()
+        scroll.setWidget(inner)
+        lay.addWidget(scroll)
+
+
+class _EffectsPanel(QWidget):
+    """Floating effects picker panel (frameless popup)."""
+    effect_picked = None  # set by TypesetEditor
+    effect_color_picked = None
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QWidget{{background:{_PANEL_BG};border:1px solid {_BORDER};"
+            f"border-radius:12px;}}"
+            f"QLabel{{color:{_TEXT_DIM};background:transparent;}}"
+            f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
+            f"border:1px solid {_BORDER};border-radius:8px;padding:5px 10px;}}"
+            f"QPushButton:hover{{background:#363645;border-color:{_ACCENT};}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        # Title row
+        title_row = QHBoxLayout()
+        title_lbl = QLabel("✨ Effects")
+        title_lbl.setStyleSheet(f"color:{_TEXT_MAIN};font-weight:bold;font-size:13px;")
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;border:none;color:{_TEXT_DIM};}}"
+            f"QPushButton:hover{{color:white;}}")
+        close_btn.clicked.connect(self.hide)
+        title_row.addWidget(title_lbl, 1)
+        title_row.addWidget(close_btn)
+        lay.addLayout(title_row)
+
+        # Effect tiles 3×3
+        EFFECTS = [
+            ("none",       "None",       "#888888"),
+            ("drop",       "Drop",       "#333333"),
+            ("glow",       "Glow",       "#7c3aed"),
+            ("echo",       "Echo",       "#555555"),
+            ("outline",    "Outline",    "#1d4ed8"),
+            ("background", "Background", "#6d28d9"),
+            ("hollow",     "Hollow",     "#059669"),
+            ("neon",       "Neon",       "#db2777"),
+        ]
+        grid_lay = QHBoxLayout()
+        grid_lay.setSpacing(6)
+        cols = [QVBoxLayout() for _ in range(3)]
+        for i, (key, label, preview_color) in enumerate(EFFECTS):
+            tile = self._make_tile(key, label, preview_color)
+            cols[i % 3].addWidget(tile)
+        for c in cols:
+            c.addStretch()
+            w = QWidget(); w.setLayout(c)
+            grid_lay.addWidget(w)
+        lay.addLayout(grid_lay)
+
+        # Effect color row
+        ec_row = QHBoxLayout()
+        ec_row.addWidget(QLabel("Effect color"))
+        self._ec_btn = QPushButton()
+        self._ec_btn.setFixedSize(32, 24)
+        self._ec_btn.setStyleSheet(
+            "background:#000000;border-radius:4px;border:1px solid #333342;")
+        self._ec_btn.clicked.connect(self._pick_ec)
+        ec_row.addWidget(self._ec_btn)
+        ec_row.addStretch()
+        lay.addLayout(ec_row)
+
+        self._ec_color = "#000000"
+        self.resize(280, 360)
+
+    def _make_tile(self, key, label, preview_color):
+        btn = QPushButton()
+        btn.setFixedSize(80, 80)
+        btn.setStyleSheet(
+            f"QPushButton{{background:{_CARD_BG};border:1px solid {_BORDER};"
+            f"border-radius:10px;}}"
+            f"QPushButton:hover{{border-color:{_ACCENT};background:#363645;}}"
+            f"QPushButton:pressed{{background:{_ACCENT};}}")
+        vl = QVBoxLayout(btn)
+        vl.setSpacing(2)
+        vl.setContentsMargins(4, 8, 4, 4)
+        ltr = QLabel("ក")
+        ltr.setAlignment(Qt.AlignCenter)
+        ltr.setStyleSheet(
+            f"color:{preview_color};font-size:28px;font-weight:bold;"
+            "background:transparent;border:none;")
+        name_lbl = QLabel(label)
+        name_lbl.setAlignment(Qt.AlignCenter)
+        name_lbl.setStyleSheet(
+            f"color:{_TEXT_DIM};font-size:10px;background:transparent;border:none;")
+        vl.addWidget(ltr, 1)
+        vl.addWidget(name_lbl)
+        btn.clicked.connect(lambda _, k=key: self._on_effect(k))
+        return btn
+
+    def _on_effect(self, key):
+        if self.effect_picked:
+            self.effect_picked(key)
+        self.hide()
+
+    def _pick_ec(self):
+        c = QColorDialog.getColor(QColor(self._ec_color), self, "Effect colour")
+        if c.isValid():
+            self._ec_color = c.name()
+            self._ec_btn.setStyleSheet(
+                f"background:{self._ec_color};border-radius:4px;border:1px solid #333342;")
+            if self.effect_color_picked:
+                self.effect_color_picked(self._ec_color)
+
+    def set_color(self, hex_color):
+        self._ec_color = hex_color
+        self._ec_btn.setStyleSheet(
+            f"background:{self._ec_color};border-radius:4px;border:1px solid #333342;")
+
+
 class TypesetEditor(QWidget):
     def __init__(self, layout_path: str):
         super().__init__()
@@ -722,6 +1152,7 @@ class TypesetEditor(QWidget):
         self.view.editor = self
         self.view.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing
                                  | QPainter.SmoothPixmapTransform)
+        self.view.setStyleSheet("QGraphicsView { background: #0f0f14; border: none; }")
         self.scene.selectionChanged.connect(self._sync_panel)
         root.addWidget(self.view, 4)
 
@@ -739,11 +1170,17 @@ class TypesetEditor(QWidget):
         quick font sizes and 1/2/3-line options."""
         bar = QWidget(self.view.viewport())
         bar.setStyleSheet(
-            "QWidget{background:#2b2b2b;border-radius:8px;}"
-            "QToolButton{color:white;background:transparent;border:none;"
-            "padding:3px 6px;font-size:12px;}"
-            "QToolButton:hover{background:#454545;border-radius:4px;}"
-            "QLabel{color:#777;}")
+            f"QWidget{{background:rgba(18,18,24,0.96);border:1px solid {_BORDER};"
+            f"border-radius:12px;}}"
+            f"QToolButton{{color:{_TEXT_MAIN};background:{_CARD_BG};border:1px solid {_BORDER};"
+            f"border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;min-width:32px;}}"
+            f"QToolButton:hover{{background:#363645;border-color:{_ACCENT};}}"
+            f"QToolButton:pressed{{background:{_ACCENT};color:white;}}"
+            f"QLabel{{color:{_TEXT_DIM};background:transparent;border:none;}}")
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(18); shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 140))
+        bar.setGraphicsEffect(shadow)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(6, 3, 6, 3)
         lay.setSpacing(1)
@@ -957,6 +1394,33 @@ class TypesetEditor(QWidget):
         crow.addWidget(self.fill_btn)
         crow.addWidget(self.outline_btn)
         tg.addLayout(crow)
+
+        # Effects button
+        self._effects_panel = _EffectsPanel(self)
+        self._effects_panel.effect_picked = self._apply_effect
+        self._effects_panel.effect_color_picked = self._set_effect_color
+        effects_btn = QPushButton("✨ Effects")
+        effects_btn.clicked.connect(lambda: self._show_effects_panel(effects_btn))
+        tg.addWidget(effects_btn)
+
+        # Gradient section header (collapsible)
+        grad_hdr = QPushButton("🎨 Gradient  ▾")
+        grad_hdr.setStyleSheet(
+            f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
+            f"border-left:3px solid {_ACCENT2};border-radius:6px;"
+            f"padding:5px 10px;text-align:left;font-weight:bold;}}"
+            f"QPushButton:hover{{background:#363645;}}")
+        self._grad_panel = _GradientPanel()
+        self._grad_panel.gradient_picked = self._apply_gradient
+        grad_hdr.clicked.connect(lambda: (
+            self._grad_panel.setVisible(not self._grad_panel.isVisible()),
+            grad_hdr.setText(
+                ("🎨 Gradient  ▾" if self._grad_panel.isVisible()
+                 else "🎨 Gradient  ▸"))
+        ))
+        tg.addWidget(grad_hdr)
+        tg.addWidget(self._grad_panel)
+
         rrow = QHBoxLayout()
         rrow.addWidget(QLabel("Rotate"))
         self.rot = QSpinBox(); self.rot.setRange(-180, 180); self.rot.setSuffix("°")
@@ -1047,12 +1511,14 @@ class TypesetEditor(QWidget):
 
         inner = QWidget()
         inner.setLayout(col)
+        inner.setStyleSheet(_SIDEBAR_QSS)
         scroll = QScrollArea()
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
         scroll.setFixedWidth(340)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(f"QScrollArea{{background:{_DARK_BG};border:none;}}")
         return scroll
 
     def _fmt_toggle(self, label, style, slot):
@@ -1112,6 +1578,10 @@ class TypesetEditor(QWidget):
             it.outline_w = d["outline_w"]
             if "align" in d:
                 it.align = Qt.AlignmentFlag(d["align"])
+            it.gradient_colors = d.get("gradient_colors")
+            it.gradient_angle = d.get("gradient_angle", 90.0)
+            it.effect = d.get("effect", "none")
+            it.effect_color = d.get("effect_color", "#000000")
             self.scene.addItem(it)
             it._refit()
             if d.get("rot"):
@@ -1847,6 +2317,36 @@ class TypesetEditor(QWidget):
                 it.outline = c
                 it.update()
             self._record_if_changed()
+
+    def _apply_gradient(self, colors, angle):
+        """Apply (or clear) a gradient fill on selected boxes."""
+        for it in self._selected():
+            it.gradient_colors = colors
+            it.gradient_angle = float(angle)
+            it.update()
+        self._record_if_changed()
+
+    def _apply_effect(self, key: str):
+        for it in self._selected():
+            it.effect = key
+            it.update()
+        self._record_if_changed()
+
+    def _set_effect_color(self, hex_color: str):
+        for it in self._selected():
+            it.effect_color = hex_color
+            it.update()
+        self._record_if_changed()
+
+    def _show_effects_panel(self, btn):
+        # Sync color to first selected box
+        sel = self._selected()
+        if sel:
+            self._effects_panel.set_color(sel[0].effect_color)
+        gp = btn.mapToGlobal(QPointF(0, btn.height() + 4).toPoint())
+        self._effects_panel.move(gp)
+        self._effects_panel.show()
+        self._effects_panel.raise_()
 
     def _copy_for_claude(self):
         lines = []
