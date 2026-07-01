@@ -31,9 +31,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .batch import batch_download, detect_chapter
 from .control import Control, PipelineStopped
 from .engine import TextCleaner
-from .pipeline import run
+from .pipeline import run, run_for_batch
 
 
 def _ocr_available() -> bool:
@@ -137,6 +138,39 @@ class SplitWorker(QObject):
             self.done.emit(out_dir, paths)
         except PipelineStopped:
             self.stopped.emit()
+        except Exception as e:
+            traceback.print_exc()
+            self.failed.emit(str(e))
+
+
+class BatchWorker(QObject):
+    progress = Signal(int, int, str)
+    done = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, url, start, count, out_dir):
+        super().__init__()
+        self.url = url
+        self.start = start
+        self.count = count
+        self.out_dir = out_dir
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def go(self):
+        try:
+            zips = batch_download(
+                self.url,
+                self.start,
+                self.count,
+                self.out_dir,
+                lambda url: run_for_batch(url, self.out_dir),
+                progress_cb=lambda i, n, msg: self.progress.emit(i, n, msg),
+                stop_flag=lambda: self._stop,
+            )
+            self.done.emit(zips)
         except Exception as e:
             traceback.print_exc()
             self.failed.emit(str(e))
@@ -268,6 +302,9 @@ class MainWindow(QWidget):
         self._control = None
         self._pause_accum = 0.0
         self._pause_start = None
+        self._batch_thread = None
+        self._batch_worker = None
+        self._batch_last_out = None
 
     # -- tab construction ---------------------------------------------
     def _build_projects_tab(self) -> QWidget:
@@ -342,6 +379,60 @@ class MainWindow(QWidget):
         self.url = QLineEdit()
         self.url.setPlaceholderText("…or paste a chapter URL (e.g. 11toon)")
         cl.addWidget(self.url)
+        self.url.textChanged.connect(self._on_url_changed)
+
+        # -- Batch download section ------------------------------------
+        self.batch_chk = QCheckBox("📦 Batch mode — download multiple chapters")
+        cl.addWidget(self.batch_chk)
+
+        self._batch_box = QWidget()
+        blay = QVBoxLayout(self._batch_box)
+        blay.setContentsMargins(12, 0, 0, 0)
+        blay.setSpacing(6)
+
+        ch_row = QHBoxLayout()
+        ch_row.addWidget(QLabel("Chapters:"))
+        self.batch_from = QSpinBox()
+        self.batch_from.setRange(1, 9999)
+        self.batch_from.setValue(1)
+        ch_row.addWidget(self.batch_from)
+        ch_row.addWidget(QLabel("to"))
+        self.batch_to = QSpinBox()
+        self.batch_to.setRange(1, 9999)
+        self.batch_to.setValue(10)
+        ch_row.addWidget(self.batch_to)
+        self.batch_detected = QLabel("")
+        self.batch_detected.setStyleSheet("color:#888;font-size:12px;")
+        ch_row.addWidget(self.batch_detected)
+        ch_row.addStretch(1)
+        blay.addLayout(ch_row)
+
+        self.batch_go_btn = QPushButton("📦 Download 10 chapters")
+        self.batch_go_btn.setFixedHeight(34)
+        self.batch_go_btn.setStyleSheet(
+            "QPushButton{background:#6c47d4;color:white;border-radius:6px;font-weight:bold;}"
+            "QPushButton:disabled{background:#b8a0e8;}"
+        )
+        self.batch_go_btn.clicked.connect(self._start_batch)
+        blay.addWidget(self.batch_go_btn)
+
+        self.batch_progress = QLabel("")
+        self.batch_progress.setWordWrap(True)
+        self.batch_progress.setStyleSheet("color:#444;font-size:12px;")
+        blay.addWidget(self.batch_progress)
+
+        self.batch_stop_btn = QPushButton("■ Stop batch")
+        self.batch_stop_btn.setVisible(False)
+        self.batch_stop_btn.clicked.connect(self._stop_batch)
+        blay.addWidget(self.batch_stop_btn)
+
+        self._batch_box.setVisible(False)
+        cl.addWidget(self._batch_box)
+
+        self.batch_chk.toggled.connect(self._batch_box.setVisible)
+        self.batch_from.valueChanged.connect(self._update_batch_btn)
+        self.batch_to.valueChanged.connect(self._update_batch_btn)
+        # --------------------------------------------------------------
 
         seg_row = QHBoxLayout()
         seg_row.addWidget(QLabel("Stitch into ~"))
@@ -475,6 +566,88 @@ class MainWindow(QWidget):
         )
         if path:
             self._on_split_drop(path)
+
+    def _on_url_changed(self, text: str):
+        n, _ = detect_chapter(text.strip())
+        if n is not None:
+            self.batch_from.setValue(n)
+            self.batch_to.setValue(n + 9)
+            self.batch_detected.setText(f"(detected ch. {n})")
+        else:
+            self.batch_detected.setText("")
+        self._update_batch_btn()
+
+    def _update_batch_btn(self):
+        count = max(0, self.batch_to.value() - self.batch_from.value() + 1)
+        self.batch_go_btn.setText(
+            f"📦 Download {count} chapter{'s' if count != 1 else ''}"
+        )
+
+    def _start_batch(self):
+        url = self.url.text().strip()
+        if not url:
+            self.batch_progress.setText("Paste a URL first.")
+            return
+        n, _ = detect_chapter(url)
+        if n is None:
+            self.batch_progress.setText("Could not detect chapter number in URL.")
+            return
+        start = self.batch_from.value()
+        end = self.batch_to.value()
+        count = max(1, end - start + 1)
+
+        ts = time.strftime("%Y-%m-%d_%H-%M")
+        out_dir = os.path.expanduser(f"~/Desktop/ManhwaPrep/batch/{ts}")
+        os.makedirs(out_dir, exist_ok=True)
+        self._batch_last_out = out_dir
+
+        self.batch_go_btn.setEnabled(False)
+        self.batch_stop_btn.setVisible(True)
+        self.batch_stop_btn.setEnabled(True)
+        self.batch_progress.setText(f"Starting: chapters {start}–{end} → {out_dir}")
+        self._append(f"Batch: chapters {start}–{end} from {url}")
+
+        self._batch_thread = QThread()
+        self._batch_worker = BatchWorker(url, start, count, out_dir)
+        self._batch_worker.moveToThread(self._batch_thread)
+        self._batch_thread.started.connect(self._batch_worker.go)
+        self._batch_worker.progress.connect(self._on_batch_progress)
+        self._batch_worker.done.connect(self._on_batch_done)
+        self._batch_worker.failed.connect(self._on_batch_failed)
+        self._batch_thread.start()
+
+    def _stop_batch(self):
+        if self._batch_worker:
+            self._batch_worker.stop()
+        self.batch_stop_btn.setEnabled(False)
+
+    def _on_batch_progress(self, done: int, total: int, msg: str):
+        self.batch_progress.setText(f"[{done}/{total}] {msg}")
+        self._append(msg)
+
+    def _on_batch_done(self, zips: list):
+        if self._batch_thread:
+            self._batch_thread.quit()
+            self._batch_thread.wait()
+        self.batch_go_btn.setEnabled(True)
+        self.batch_stop_btn.setVisible(False)
+        out = self._batch_last_out or ""
+        msg = f"✓ Done — {len(zips)} ZIP(s) saved to {out}"
+        self.batch_progress.setText(msg)
+        self.batch_progress.setStyleSheet("color:#1a9e4b;font-size:12px;")
+        self._append(msg)
+        if out and os.path.isdir(out):
+            _open_folder(out)
+
+    def _on_batch_failed(self, err: str):
+        if self._batch_thread:
+            self._batch_thread.quit()
+            self._batch_thread.wait()
+        self.batch_go_btn.setEnabled(True)
+        self.batch_stop_btn.setVisible(False)
+        self.batch_progress.setText(f"✗ {err}")
+        self.batch_progress.setStyleSheet("color:#d12d2d;font-size:12px;")
+        self._append(f"Batch failed: {err}")
 
     def _on_clean_drop(self, path: str):
         self.url.clear()
