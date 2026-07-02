@@ -1429,16 +1429,16 @@ class TypesetEditor(QWidget):
         self._tool_buttons = {}
         bar = QHBoxLayout()
         bar.setSpacing(3)
-        bar.addWidget(self._tool_button("⤢", "select", "Select / move (V)"))
-        bar.addWidget(self._tool_button("💧", "blend", "Blend / smudge"))
-        bar.addWidget(self._tool_button("🧽", "erase", "Erase — restores original art"))
-        bar.addWidget(self._tool_button("🖌", "paint", "Paint a colour"))
+        bar.addWidget(self._tool_button("Sel", "select", "Select / move (V)"))
+        bar.addWidget(self._tool_button("Bld", "blend", "Blend / smudge"))
+        bar.addWidget(self._tool_button("Era", "erase", "Erase — restores original art"))
+        bar.addWidget(self._tool_button("Pnt", "paint", "Paint a colour"))
         bar.addWidget(self._tool_button(
-            "🩹", "remove",
+            "Rem", "remove",
             "Remove brush — paint over a watermark / SFX to erase it (rebuilds "
             "the background)"))
         bar.addWidget(self._tool_button(
-            "⬚", "boxremove",
+            "Box", "boxremove",
             "Box detect-remove — drag a box over a watermark; only the mark "
             "inside is erased, the art is kept"))
         bar.addStretch(1)
@@ -1462,7 +1462,7 @@ class TypesetEditor(QWidget):
         bg.addLayout(brow)
         # Remove tool: highlight, then commit/clear.
         erow = QHBoxLayout()
-        self.erase_hl_btn = QPushButton("🩹 Erase highlighted")
+        self.erase_hl_btn = QPushButton("Erase highlighted")
         self.erase_hl_btn.setToolTip("Inpaint everything you've highlighted")
         self.erase_hl_btn.clicked.connect(self._erase_highlight)
         self.erase_hl_btn.setEnabled(False)
@@ -1539,7 +1539,7 @@ class TypesetEditor(QWidget):
         self._effects_panel = _EffectsPanel()
         self._effects_panel.effect_picked = self._apply_effect
         self._effects_panel.effect_color_picked = self._set_effect_color
-        eff_hdr = QPushButton("✨ Effects  ▸")
+        eff_hdr = QPushButton("Effects  ▸")
         eff_hdr.setStyleSheet(
             f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
             f"border-left:3px solid {_ACCENT};border-radius:6px;"
@@ -1550,14 +1550,14 @@ class TypesetEditor(QWidget):
         def _toggle_eff():
             vis = not self._effects_panel.isVisible()
             self._effects_panel.setVisible(vis)
-            eff_hdr.setText("✨ Effects  ▾" if vis else "✨ Effects  ▸")
+            eff_hdr.setText("Effects  ▾" if vis else "Effects  ▸")
 
         eff_hdr.clicked.connect(_toggle_eff)
         tg.addWidget(eff_hdr)
         tg.addWidget(self._effects_panel)
 
         # Gradient — inline collapsible
-        grad_hdr = QPushButton("🎨 Gradient  ▸")
+        grad_hdr = QPushButton("Gradient  ▸")
         grad_hdr.setStyleSheet(
             f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
             f"border-left:3px solid {_ACCENT2};border-radius:6px;"
@@ -1570,7 +1570,7 @@ class TypesetEditor(QWidget):
         def _toggle_grad():
             vis = not self._grad_panel.isVisible()
             self._grad_panel.setVisible(vis)
-            grad_hdr.setText("🎨 Gradient  ▾" if vis else "🎨 Gradient  ▸")
+            grad_hdr.setText("Gradient  ▾" if vis else "Gradient  ▸")
 
         grad_hdr.clicked.connect(_toggle_grad)
         tg.addWidget(grad_hdr)
@@ -1604,11 +1604,11 @@ class TypesetEditor(QWidget):
         ins = QGroupBox("Insert")
         ig = QVBoxLayout(ins)
         arow = QHBoxLayout()
-        add_btn = QPushButton("➕ Text box"); add_btn.clicked.connect(self._add_box)
-        del_btn = QPushButton("🗑 Delete"); del_btn.clicked.connect(self._delete_selected)
+        add_btn = QPushButton("+ Text box"); add_btn.clicked.connect(self._add_box)
+        del_btn = QPushButton("Delete"); del_btn.clicked.connect(self._delete_selected)
         arow.addWidget(add_btn); arow.addWidget(del_btn)
         ig.addLayout(arow)
-        img_btn = QPushButton("🖼 Add image  (or ⌘V)")
+        img_btn = QPushButton("Add image  (or ⌘V)")
         img_btn.clicked.connect(self._add_image)
         ig.addWidget(img_btn)
         krow = QHBoxLayout()
@@ -1639,13 +1639,13 @@ class TypesetEditor(QWidget):
         # export
         exp = QGroupBox("Export")
         eg = QVBoxLayout(exp)
-        self.export_btn = QPushButton("💾 Export this canvas")
+        self.export_btn = QPushButton("Export canvas")
         self.export_btn.clicked.connect(self._export)
         eg.addWidget(self.export_btn)
         self.export_all_btn = QPushButton("Export ALL canvases")
         self.export_all_btn.clicked.connect(self._export_all)
         eg.addWidget(self.export_all_btn)
-        self.pdf_btn = QPushButton("📄 Save as one PDF")
+        self.pdf_btn = QPushButton("Save as PDF")
         self.pdf_btn.setToolTip("Combine every canvas into a single PDF")
         self.pdf_btn.clicked.connect(self._export_pdf)
         eg.addWidget(self.pdf_btn)
@@ -2175,7 +2175,7 @@ class TypesetEditor(QWidget):
             return
         path = item.data(Qt.UserRole)
         menu = QMenu(self)
-        act = menu.addAction("🗑 Delete from library")
+        act = menu.addAction("Delete from library")
         if menu.exec(self.lib.mapToGlobal(pos)) is act and path:
             if QMessageBox.question(
                     self, "Delete SFX",
