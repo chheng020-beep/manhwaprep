@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from PySide6.QtCore import (
-    QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSize, Qt)
+    QBuffer, QByteArray, QIODevice, QPointF, QRect, QRectF, QSize, Qt)
 import math
 
 from PySide6.QtGui import (
@@ -414,7 +414,17 @@ class TextBoxItem(QGraphicsItem):
         mp.setFont(self.font)
         mp.setPen(Qt.white)
         mp.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-        mp.drawText(QRectF(0, 0, iw, ih), flags, self._plain_text or "")
+        if self.line_spacing == 1.0:
+            mp.drawText(QRectF(0, 0, iw, ih), flags, self._plain_text or "")
+        else:
+            # match the spaced layout used by the fill / outline passes
+            layout, th = self._text_layout()
+            y_off = 0.0
+            if int(self.align) & int(Qt.AlignVCenter):
+                y_off = (ih - th) / 2
+            elif int(self.align) & int(Qt.AlignBottom):
+                y_off = ih - th
+            layout.draw(mp, QPointF(0, y_off))
         mp.end()
         # 2. Fill gradient then punch out text shape with DestinationIn
         # Format_ARGB32 (non-premultiplied) for reliable compositing on all platforms
@@ -482,8 +492,9 @@ class TextBoxItem(QGraphicsItem):
         # Clip to bold character ranges so only those chars show in bold
         bold_chars: list[tuple[int, int]] = []
         for m in re.finditer(r'\*\*(.+?)\*\*', self.text or '', re.DOTALL):
-            # Adjust position: each **...** pair before this match removes 4 chars
-            adj = sum(4 for mm in re.finditer(r'\*\*', self.text[:m.start()]))
+            # Stripped-text position: markers before this match remove 2 chars
+            # each; this match's own opening ** cancels against content start.
+            adj = 2 * len(re.findall(r'\*\*', self.text[:m.start()]))
             s = m.start() - adj
             e_ = s + len(m.group(1))
             bold_chars.append((s, e_))
@@ -496,9 +507,11 @@ class TextBoxItem(QGraphicsItem):
                 ol_e = min(end, ls + ll)
                 if ol_s >= ol_e:
                     continue
-                x1 = line.cursorToX(ol_s)
-                x2 = line.cursorToX(ol_e)
-                clip = QRectF(x1, line.y(), x2 - x1, line.height())
+                # PySide6 cursorToX returns (x, cursorPos)
+                x1 = line.cursorToX(ol_s)[0]
+                x2 = line.cursorToX(ol_e)[0]
+                clip = QRectF(min(x1, x2), line.y(),
+                              abs(x2 - x1), line.height())
                 clip.translate(r.x(), r.y() + y_off)
                 p.save()
                 p.setClipRect(clip, Qt.IntersectClip)
@@ -518,6 +531,23 @@ class TextBoxItem(QGraphicsItem):
         # ── Effects: pre-pass (rendered before main text) ─────────────────
         pt = self._plain_text   # **markers** stripped — used for all outline/effect passes
         eff = self.effect
+
+        # All outline/effect passes must position text exactly like the main
+        # fill, or the layers ghost apart when line_spacing != 1.0. Build the
+        # spaced layout once per paint and reuse it for every pass.
+        if self.line_spacing != 1.0 and pt:
+            _lay, _th = self._text_layout()
+            _yoff = 0.0
+            if int(self.align) & int(Qt.AlignVCenter):
+                _yoff = (r.height() - _th) / 2
+            elif int(self.align) & int(Qt.AlignBottom):
+                _yoff = r.height() - _th
+
+            def _pass(dx, dy):
+                _lay.draw(p, QPointF(dx, _yoff + dy))
+        else:
+            def _pass(dx, dy):
+                p.drawText(r.translated(dx, dy), flags, pt)
         if eff == "background" and pt:
             bg = QColor(ec); bg.setAlpha(180)
             p.setBrush(bg); p.setPen(Qt.NoPen)
@@ -525,11 +555,11 @@ class TextBoxItem(QGraphicsItem):
         if eff == "drop" and pt:
             shadow = QColor(0, 0, 0, 120)
             p.setPen(shadow)
-            p.drawText(r.translated(3, 3), flags, pt)
+            _pass(3, 3)
         if eff == "echo" and pt:
             echo_c = QColor(self.fill); echo_c.setAlpha(80)
             p.setPen(echo_c)
-            p.drawText(r.translated(4, 4), flags, pt)
+            _pass(4, 4)
         if eff == "glow" and pt:
             for alpha, offsets in (
                 (80, ((-5,0),(5,0),(0,-5),(0,5),(-4,-4),(4,-4),(-4,4),(4,4))),
@@ -539,13 +569,13 @@ class TextBoxItem(QGraphicsItem):
                 for gx, gy in offsets:
                     gc = QColor(ec); gc.setAlpha(alpha)
                     p.setPen(gc)
-                    p.drawText(r.translated(gx, gy), flags, pt)
+                    _pass(gx, gy)
         if eff == "neon" and pt:
             for alpha, offs in ((60, 5), (100, 3), (140, 1)):
                 for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs),(-offs,-offs),(offs,-offs),(-offs,offs),(offs,offs)):
                     gc = QColor(ec); gc.setAlpha(alpha)
                     p.setPen(gc)
-                    p.drawText(r.translated(gx, gy), flags, pt)
+                    _pass(gx, gy)
 
         # ── Outline (white halo; colored+thick for outline effect) ──────────
         ow = min(12, max(self.outline_w, round(self.font.pointSizeF() * 0.10)))
@@ -558,13 +588,13 @@ class TextBoxItem(QGraphicsItem):
             for dx in range(-ow, ow + 1):
                 for dy in range(-ow, ow + 1):
                     if (dx or dy) and dx * dx + dy * dy <= ow * ow:
-                        p.drawText(r.translated(dx, dy), flags, pt)
+                        _pass(dx, dy)
 
         # ── Main text fill ─────────────────────────────────────────────────
         if eff == "hollow" and pt:
             path = QPainterPath()
             fm = QFontMetricsF(self.font)
-            lh = fm.lineSpacing()
+            lh = fm.lineSpacing() * self.line_spacing
             total_h = fm.boundingRect(QRectF(0, 0, self.w, 1e7), flags, pt).height()
             y0 = max(fm.ascent(), (self.h - total_h) / 2 + fm.ascent())
             for line in (pt or "").split("\n") or [""]:
@@ -2064,6 +2094,48 @@ class TypesetEditor(QWidget):
         it.setSelected(True)
         self._record_if_changed()
 
+    def _duplicate_selected(self):
+        """Clone every selected text box / image (full style), offset 20 px."""
+        sel = [it for it in self.scene.selectedItems()
+               if isinstance(it, (TextBoxItem, ImageItem))]
+        if not sel:
+            return
+        self.scene.clearSelection()
+        next_n = max([it.n for it in self.items], default=0) + 1
+        for src in sel:
+            if isinstance(src, ImageItem):
+                im = ImageItem(src._pix, src.x() + 20, src.y() + 20, src.w, src.h)
+                self.scene.addItem(im)
+                if src.rotation():
+                    im.setTransformOriginPoint(im.w / 2, im.h / 2)
+                    im.setRotation(src.rotation())
+                self.images.append(im)
+                im.setSelected(True)
+                continue
+            it = TextBoxItem(next_n, src.text, src.x() + 20, src.y() + 20,
+                             src.w, src.h)
+            next_n += 1
+            it.font = QFont(src.font)
+            it.max_size = src.max_size
+            it.fill = QColor(src.fill)
+            it.outline = QColor(src.outline)
+            it.outline_w = src.outline_w
+            it.align = src.align
+            it.gradient_colors = list(src.gradient_colors) if src.gradient_colors else None
+            it.gradient_angle = src.gradient_angle
+            it.line_spacing = src.line_spacing
+            it.effect = src.effect
+            it.effect_color = src.effect_color
+            it.on_edit = self._start_inline_edit
+            self.scene.addItem(it)
+            it._refit()
+            if src.rotation():
+                it.setTransformOriginPoint(it.w / 2, it.h / 2)
+                it.setRotation(src.rotation())
+            self.items.append(it)
+            it.setSelected(True)
+        self._record_if_changed()
+
     def _delete_selected(self):
         for it in list(self.scene.selectedItems()):
             self.scene.removeItem(it)
@@ -2087,6 +2159,18 @@ class TypesetEditor(QWidget):
             return
         if e.key() == Qt.Key_T and e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
             self._add_box()
+            return
+        if e.key() == Qt.Key_D and e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            self._duplicate_selected()
+            return
+        if (e.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down)
+                and self.scene.selectedItems()):
+            step = 10 if e.modifiers() & Qt.ShiftModifier else 1
+            dx = step * ((e.key() == Qt.Key_Right) - (e.key() == Qt.Key_Left))
+            dy = step * ((e.key() == Qt.Key_Down) - (e.key() == Qt.Key_Up))
+            for it in self.scene.selectedItems():
+                it.moveBy(dx, dy)
+            self._record_if_changed()
             return
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.scene.selectedItems():
             self._delete_selected()
