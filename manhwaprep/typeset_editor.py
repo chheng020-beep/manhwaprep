@@ -280,9 +280,6 @@ class TextBoxItem(QGraphicsItem):
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
-        # Cache the (expensive outlined-Khmer) render to a pixmap so scrolling /
-        # zooming a page full of boxes doesn't re-shape every glyph each repaint.
-        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.setAcceptHoverEvents(True)
         self.setPos(x, y)
         self.setTransformOriginPoint(self.w / 2, self.h / 2)
@@ -2322,12 +2319,8 @@ class TypesetEditor(QWidget):
             self._record_if_changed()
 
     def _force_repaint(self, items):
-        """Reset DeviceCoordinateCache to guarantee a fresh repaint."""
-        from PySide6.QtWidgets import QGraphicsItem
         for it in items:
-            it.setCacheMode(QGraphicsItem.NoCache)
             it.update()
-            it.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 
     def _apply_gradient(self, colors, angle):
         """Apply (or clear) a gradient fill on selected boxes."""

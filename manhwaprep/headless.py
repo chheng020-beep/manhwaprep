@@ -89,7 +89,9 @@ Array.prototype.map = function(fn, thisArg) {
             if (u.startsWith('http') || u.startsWith('/')) {
                 window.__comix_pages.push({
                     count: result.length,
-                    items: _origMap.call(result, function(x) { return x.url; })
+                    items: _origMap.call(result, function(x) {
+                        return {url: x.url, w: x.width || 0, h: x.height || 0};
+                    })
                 });
             }
         }
@@ -122,13 +124,38 @@ def _collect_comix(url: str, timeout_ms: int = 60000) -> list[str]:
     if not captured:
         return []
     best = max(captured, key=lambda c: c["count"])
+
+    # Compute the median height/width ratio across pages that have valid dimensions.
+    # Real webtoon strips are very tall (ratio >= 2); chapter-navigation/thumbnail
+    # gallery pages inserted by comix.to tend to be near-square or shorter.
+    items = best["items"]
+    ratios = [it["h"] / it["w"] for it in items
+              if isinstance(it, dict) and it.get("w", 0) > 0 and it.get("h", 0) > 0]
+    if ratios:
+        ratios_sorted = sorted(ratios)
+        median_ratio = ratios_sorted[len(ratios_sorted) // 2]
+        # Keep only pages whose ratio is at least 40% of the median.
+        # This drops near-square or landscape thumbnail-grid pages while keeping
+        # pages that happen to be shorter (e.g. a short epilogue panel).
+        min_ratio = max(1.0, median_ratio * 0.40)
+    else:
+        min_ratio = 1.0  # no dimension data — keep everything portrait-ish
+
     seen: set[str] = set()
     result = []
-    for u in best["items"]:
-        u = str(u)
-        if u and u not in seen:
-            seen.add(u)
-            result.append(u)
+    for it in items:
+        if isinstance(it, dict):
+            u = str(it.get("url", ""))
+            w, h = it.get("w", 0), it.get("h", 0)
+        else:
+            u = str(it)
+            w = h = 0
+        if not u or u in seen:
+            continue
+        if w > 0 and h > 0 and (h / w) < min_ratio:
+            continue  # skip thumbnail-grid / landscape nav page
+        seen.add(u)
+        result.append(u)
     return result
 
 
