@@ -998,96 +998,76 @@ class _GradientPanel(QWidget):
 
 
 class _EffectsPanel(QWidget):
-    """Floating effects picker panel (frameless popup)."""
-    effect_picked = None  # set by TypesetEditor
+    """Inline effects picker — no popup (macOS Qt.Popup eats the triggering click)."""
+    effect_picked = None
     effect_color_picked = None
 
+    EFFECTS = [
+        ("none",       "None",       "#888888"),
+        ("drop",       "Drop Shadow","#333333"),
+        ("glow",       "Glow",       "#7c3aed"),
+        ("echo",       "Echo",       "#555555"),
+        ("outline",    "Outline",    "#1d4ed8"),
+        ("background", "Background", "#6d28d9"),
+        ("hollow",     "Hollow",     "#059669"),
+        ("neon",       "Neon",       "#db2777"),
+    ]
+
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(
-            f"QWidget{{background:{_PANEL_BG};border:1px solid {_BORDER};"
-            f"border-radius:12px;}}"
-            f"QLabel{{color:{_TEXT_DIM};background:transparent;}}"
-            f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
-            f"border:1px solid {_BORDER};border-radius:8px;padding:5px 10px;}}"
-            f"QPushButton:hover{{background:#363645;border-color:{_ACCENT};}}")
+        super().__init__(parent)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(6)
 
-        # Title row
-        title_row = QHBoxLayout()
-        title_lbl = QLabel("✨ Effects")
-        title_lbl.setStyleSheet(f"color:{_TEXT_MAIN};font-weight:bold;font-size:13px;")
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(24, 24)
-        close_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;border:none;color:{_TEXT_DIM};}}"
-            f"QPushButton:hover{{color:white;}}")
-        close_btn.clicked.connect(self.hide)
-        title_row.addWidget(title_lbl, 1)
-        title_row.addWidget(close_btn)
-        lay.addLayout(title_row)
+        # 4-column grid of compact effect buttons
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        for i, (key, label, color) in enumerate(self.EFFECTS):
+            btn = self._make_tile(key, label, color)
+            grid.addWidget(btn, i // 4, i % 4)
+        lay.addLayout(grid)
 
-        # Effect tiles 3×3
-        EFFECTS = [
-            ("none",       "None",       "#888888"),
-            ("drop",       "Drop",       "#333333"),
-            ("glow",       "Glow",       "#7c3aed"),
-            ("echo",       "Echo",       "#555555"),
-            ("outline",    "Outline",    "#1d4ed8"),
-            ("background", "Background", "#6d28d9"),
-            ("hollow",     "Hollow",     "#059669"),
-            ("neon",       "Neon",       "#db2777"),
-        ]
-        grid_lay = QHBoxLayout()
-        grid_lay.setSpacing(6)
-        cols = [QVBoxLayout() for _ in range(3)]
-        for i, (key, label, preview_color) in enumerate(EFFECTS):
-            tile = self._make_tile(key, label, preview_color)
-            cols[i % 3].addWidget(tile)
-        for c in cols:
-            c.addStretch()
-            w = QWidget(); w.setLayout(c)
-            grid_lay.addWidget(w)
-        lay.addLayout(grid_lay)
-
-        # Effect color row
+        # Effect color picker row
         ec_row = QHBoxLayout()
-        ec_row.addWidget(QLabel("Effect color"))
+        ec_row.addWidget(QLabel("Color:"))
         self._ec_btn = QPushButton()
-        self._ec_btn.setFixedSize(32, 24)
+        self._ec_btn.setFixedSize(36, 22)
         self._ec_btn.setStyleSheet(
-            "background:#000000;border-radius:4px;border:1px solid #333342;")
+            "background:#000000;border-radius:4px;border:1px solid #444;")
+        self._ec_btn.setToolTip("Effect colour (glow/neon/shadow)")
         self._ec_btn.clicked.connect(self._pick_ec)
         ec_row.addWidget(self._ec_btn)
+        clear_btn = QPushButton("✕ None")
+        clear_btn.setFixedHeight(22)
+        clear_btn.setToolTip("Remove effect")
+        clear_btn.clicked.connect(lambda: self._on_effect("none"))
+        ec_row.addWidget(clear_btn)
         ec_row.addStretch()
         lay.addLayout(ec_row)
 
         self._ec_color = "#000000"
-        self.resize(280, 360)
 
     def _make_tile(self, key, label, preview_color):
         btn = QPushButton()
-        btn.setFixedSize(80, 80)
+        btn.setFixedSize(60, 58)
+        btn.setToolTip(label)
         btn.setStyleSheet(
             f"QPushButton{{background:{_CARD_BG};border:1px solid {_BORDER};"
-            f"border-radius:10px;}}"
+            f"border-radius:8px;}}"
             f"QPushButton:hover{{border-color:{_ACCENT};background:#363645;}}"
             f"QPushButton:pressed{{background:{_ACCENT};}}")
         vl = QVBoxLayout(btn)
-        vl.setSpacing(2)
-        vl.setContentsMargins(4, 8, 4, 4)
+        vl.setSpacing(1)
+        vl.setContentsMargins(2, 6, 2, 4)
         ltr = QLabel("ក")
         ltr.setAlignment(Qt.AlignCenter)
         ltr.setStyleSheet(
-            f"color:{preview_color};font-size:28px;font-weight:bold;"
+            f"color:{preview_color};font-size:22px;font-weight:bold;"
             "background:transparent;border:none;")
-        name_lbl = QLabel(label)
+        name_lbl = QLabel(label.split()[0])  # first word only for tight fit
         name_lbl.setAlignment(Qt.AlignCenter)
         name_lbl.setStyleSheet(
-            f"color:{_TEXT_DIM};font-size:10px;background:transparent;border:none;")
+            f"color:{_TEXT_DIM};font-size:9px;background:transparent;border:none;")
         vl.addWidget(ltr, 1)
         vl.addWidget(name_lbl)
         btn.clicked.connect(lambda _, k=key: self._on_effect(k))
@@ -1096,21 +1076,20 @@ class _EffectsPanel(QWidget):
     def _on_effect(self, key):
         if self.effect_picked:
             self.effect_picked(key)
-        self.hide()
 
     def _pick_ec(self):
         c = QColorDialog.getColor(QColor(self._ec_color), self, "Effect colour")
         if c.isValid():
             self._ec_color = c.name()
             self._ec_btn.setStyleSheet(
-                f"background:{self._ec_color};border-radius:4px;border:1px solid #333342;")
+                f"background:{self._ec_color};border-radius:4px;border:1px solid #444;")
             if self.effect_color_picked:
                 self.effect_color_picked(self._ec_color)
 
     def set_color(self, hex_color):
         self._ec_color = hex_color
         self._ec_btn.setStyleSheet(
-            f"background:{self._ec_color};border-radius:4px;border:1px solid #333342;")
+            f"background:{self._ec_color};border-radius:4px;border:1px solid #444;")
 
 
 class TypesetEditor(QWidget):
@@ -1395,16 +1374,29 @@ class TypesetEditor(QWidget):
         crow.addWidget(self.outline_btn)
         tg.addLayout(crow)
 
-        # Effects button
-        self._effects_panel = _EffectsPanel(self)
+        # Effects — inline collapsible (no popup; macOS Qt.Popup eats the triggering click)
+        self._effects_panel = _EffectsPanel()
         self._effects_panel.effect_picked = self._apply_effect
         self._effects_panel.effect_color_picked = self._set_effect_color
-        effects_btn = QPushButton("✨ Effects")
-        effects_btn.clicked.connect(lambda: self._show_effects_panel(effects_btn))
-        tg.addWidget(effects_btn)
+        eff_hdr = QPushButton("✨ Effects  ▸")
+        eff_hdr.setStyleSheet(
+            f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
+            f"border-left:3px solid {_ACCENT};border-radius:6px;"
+            f"padding:5px 10px;text-align:left;font-weight:bold;}}"
+            f"QPushButton:hover{{background:#363645;}}")
+        self._effects_panel.setVisible(False)
 
-        # Gradient section header (collapsible)
-        grad_hdr = QPushButton("🎨 Gradient  ▾")
+        def _toggle_eff():
+            vis = not self._effects_panel.isVisible()
+            self._effects_panel.setVisible(vis)
+            eff_hdr.setText("✨ Effects  ▾" if vis else "✨ Effects  ▸")
+
+        eff_hdr.clicked.connect(_toggle_eff)
+        tg.addWidget(eff_hdr)
+        tg.addWidget(self._effects_panel)
+
+        # Gradient — inline collapsible
+        grad_hdr = QPushButton("🎨 Gradient  ▸")
         grad_hdr.setStyleSheet(
             f"QPushButton{{background:{_CARD_BG};color:{_TEXT_MAIN};"
             f"border-left:3px solid {_ACCENT2};border-radius:6px;"
@@ -1412,12 +1404,14 @@ class TypesetEditor(QWidget):
             f"QPushButton:hover{{background:#363645;}}")
         self._grad_panel = _GradientPanel()
         self._grad_panel.gradient_picked = self._apply_gradient
-        grad_hdr.clicked.connect(lambda: (
-            self._grad_panel.setVisible(not self._grad_panel.isVisible()),
-            grad_hdr.setText(
-                ("🎨 Gradient  ▾" if self._grad_panel.isVisible()
-                 else "🎨 Gradient  ▸"))
-        ))
+        self._grad_panel.setVisible(False)
+
+        def _toggle_grad():
+            vis = not self._grad_panel.isVisible()
+            self._grad_panel.setVisible(vis)
+            grad_hdr.setText("🎨 Gradient  ▾" if vis else "🎨 Gradient  ▸")
+
+        grad_hdr.clicked.connect(_toggle_grad)
         tg.addWidget(grad_hdr)
         tg.addWidget(self._grad_panel)
 
@@ -2318,35 +2312,39 @@ class TypesetEditor(QWidget):
                 it.update()
             self._record_if_changed()
 
+    def _force_repaint(self, items):
+        """Reset DeviceCoordinateCache to guarantee a fresh repaint."""
+        from PySide6.QtWidgets import QGraphicsItem
+        for it in items:
+            it.setCacheMode(QGraphicsItem.NoCache)
+            it.update()
+            it.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
+
     def _apply_gradient(self, colors, angle):
         """Apply (or clear) a gradient fill on selected boxes."""
-        for it in self._selected():
+        sel = self._selected()
+        for it in sel:
             it.gradient_colors = colors
             it.gradient_angle = float(angle)
-            it.update()
+        self._force_repaint(sel)
         self._record_if_changed()
 
     def _apply_effect(self, key: str):
-        for it in self._selected():
+        sel = self._selected()
+        for it in sel:
             it.effect = key
-            it.update()
+        # Sync effect-color picker to first selected item
+        if sel:
+            self._effects_panel.set_color(sel[0].effect_color)
+        self._force_repaint(sel)
         self._record_if_changed()
 
     def _set_effect_color(self, hex_color: str):
-        for it in self._selected():
-            it.effect_color = hex_color
-            it.update()
-        self._record_if_changed()
-
-    def _show_effects_panel(self, btn):
-        # Sync color to first selected box
         sel = self._selected()
-        if sel:
-            self._effects_panel.set_color(sel[0].effect_color)
-        gp = btn.mapToGlobal(QPointF(0, btn.height() + 4).toPoint())
-        self._effects_panel.move(gp)
-        self._effects_panel.show()
-        self._effects_panel.raise_()
+        for it in sel:
+            it.effect_color = hex_color
+        self._force_repaint(sel)
+        self._record_if_changed()
 
     def _copy_for_claude(self):
         lines = []
