@@ -77,9 +77,71 @@ def _ensure_chromium() -> None:
             )
 
 
+_COMIX_HOOK = """
+window.__comix_pages = [];
+const _origMap = Array.prototype.map;
+Array.prototype.map = function(fn, thisArg) {
+    const result = _origMap.call(this, fn, thisArg);
+    if (result && result.length > 2) {
+        const first = result[0];
+        if (first && typeof first === 'object' && 'url' in first && 'width' in first && 'height' in first) {
+            const u = String(first.url);
+            if (u.startsWith('http') || u.startsWith('/')) {
+                window.__comix_pages.push({
+                    count: result.length,
+                    items: _origMap.call(result, function(x) { return x.url; })
+                });
+            }
+        }
+    }
+    return result;
+};
+"""
+
+
+def _collect_comix(url: str, timeout_ms: int = 60000) -> list[str]:
+    """comix.to uses encrypted XHR responses decrypted by secure.js at runtime.
+    Hooking Array.prototype.map intercepts the page list just after decryption,
+    before the reader renders (which only shows 4 images at a time)."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(user_agent=UA, viewport={"width": 800, "height": 900})
+        page = ctx.new_page()
+        page.add_init_script(_COMIX_HOOK)
+        try:
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+        except Exception:
+            pass
+        page.wait_for_timeout(4000)
+        captured = page.evaluate("window.__comix_pages")
+        browser.close()
+
+    # Pick the largest captured array (the chapter page list, not UI arrays)
+    if not captured:
+        return []
+    best = max(captured, key=lambda c: c["count"])
+    seen: set[str] = set()
+    result = []
+    for u in best["items"]:
+        u = str(u)
+        if u and u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
 def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
     _ensure_chromium()
     from playwright.sync_api import sync_playwright
+
+    # comix.to fast path: use Array.map hook to get all pages from encrypted API
+    host = urlparse(url).netloc.lower()
+    if "comix.to" in host or "comick.io" in host or "comick.fun" in host:
+        pages = _collect_comix(url, timeout_ms=60000)
+        if pages:
+            return pages
 
     network: list[str] = []     # image responses seen on the wire
     api_images: list[str] = []  # image URLs found inside JSON API responses
