@@ -68,8 +68,22 @@ def _dedupe_images(urls: list[str]) -> list[str]:
 
 
 def fetch_image_urls(chapter_url: str, session: requests.Session) -> list[str]:
-    r = session.get(chapter_url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+    orig_host = urlparse(chapter_url).netloc
+    try:
+        r = session.get(chapter_url, headers=HEADERS, timeout=30, allow_redirects=True)
+        r.raise_for_status()
+    except requests.exceptions.ConnectionError as exc:
+        # Redirect to a dead host (e.g. nuviatoon → discord.gg) fails here.
+        raise RuntimeError(
+            f"Site appears to have moved or shut down (connection error: {exc})"
+        )
+    # If we were redirected off the original domain (e.g. to discord.gg),
+    # the page is gone — bail immediately rather than scraping a wrong page.
+    final_host = urlparse(r.url).netloc
+    if orig_host and final_host and orig_host != final_host:
+        raise RuntimeError(
+            f"Site redirected to {final_host} — it may have moved or shut down."
+        )
     html = r.text
     soup = BeautifulSoup(html, "html.parser")
 

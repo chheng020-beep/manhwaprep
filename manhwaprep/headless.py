@@ -81,7 +81,15 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
     _ensure_chromium()
     from playwright.sync_api import sync_playwright
 
-    network: list[str] = []
+    network: list[str] = []     # image responses seen on the wire
+    api_images: list[str] = []  # image URLs found inside JSON API responses
+
+    # Regex to pull image URLs out of JSON/JS payloads
+    _IMG_URL_RE = re.compile(
+        r'https?://[^\s"\'<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?',
+        re.IGNORECASE,
+    )
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(user_agent=UA)
@@ -92,17 +100,35 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
                 ct = resp.headers.get("content-type", "")
                 if ct.startswith("image/"):
                     network.append(resp.url)
+                elif "json" in ct or "javascript" in ct:
+                    # nuviatoon and similar sites return chapter image lists via
+                    # a JSON API — extract any image URLs from the response body.
+                    try:
+                        body = resp.text()
+                        found = _IMG_URL_RE.findall(body)
+                        api_images.extend(found)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
         page.on("response", on_response)
-        # networkidle catches sites (comix.to etc.) that finish XHR after DOM load
         try:
             page.goto(url, wait_until="networkidle", timeout=timeout_ms)
         except Exception:
-            pass  # timeout is OK — we'll still collect what loaded
+            pass  # timeout is OK — we collect what loaded
 
-        # scroll to bottom in steps to trigger lazy-loaded images
+        # Also pull image URLs out of inline <script> tags in the rendered DOM.
+        try:
+            inline_js = page.eval_on_selector_all(
+                "script:not([src])",
+                "els => els.map(e => e.textContent).join('\\n')"
+            )
+            api_images.extend(_IMG_URL_RE.findall(inline_js))
+        except Exception:
+            pass
+
+        # Scroll to trigger lazy-loaded images
         prev = -1
         for _ in range(80):
             page.mouse.wheel(0, 3000)
@@ -115,8 +141,7 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
             prev = h
         page.wait_for_timeout(2000)
 
-        # Collect img srcs: check currentSrc, src, AND data-src / data-original
-        # (comix.to uses data-src for lazy-loaded chapter images).
+        # DOM: img tags (currentSrc / data-src / src)
         dom = page.eval_on_selector_all(
             "img",
             """els => els.map(e =>
@@ -127,7 +152,7 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
                 e.src || ''
             )"""
         )
-        # Also grab any high-resolution src from picture/source elements
+        # picture/source srcset
         sources = page.eval_on_selector_all(
             "source[srcset], source[data-srcset]",
             """els => els.map(e => {
@@ -137,15 +162,22 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
         )
         browser.close()
 
-    # Prefer DOM order (reading order); supplement with network captures.
+    # Combine: DOM first (reading order), then API/script URLs, then network.
     dom = [u for u in dom if u and u.startswith("http")]
     dom += [u for u in sources if u and u.startswith("http")]
+    all_api = [u for u in api_images if u.startswith("http")]
+
     dom_pages = _pick_chapter_group(dom)
     if len(dom_pages) >= 3:
         return dom_pages
-    # Fall back to network order if DOM extraction was sparse
+
+    api_pages = _pick_chapter_group(all_api)
+    if len(api_pages) >= 3:
+        return api_pages
+
     net_pages = _pick_chapter_group(network)
-    return net_pages if len(net_pages) >= len(dom_pages) else dom_pages
+    best = max([dom_pages, api_pages, net_pages], key=len)
+    return best
 
 
 def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
