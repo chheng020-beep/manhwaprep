@@ -269,9 +269,95 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
     return best
 
 
+def _render_comix(url: str, timeout_ms: int = 180000) -> list[bytes]:
+    """Screenshot each comix.to page after the browser renders it.
+
+    comix.to serves chapter images with pixel-level tile scrambling (DRM).
+    The JS reader draws the correct tile order onto a <canvas> element.
+    Screenshotting the canvas via Playwright captures what the user sees —
+    bypassing the scrambling entirely without needing to reverse-engineer it.
+
+    Scrolls slowly through the reader so lazy-loaded pages have time to render,
+    capturing each large canvas/image at its document-relative position so that
+    virtual-scrolling readers (where elements are removed from the DOM once
+    off-screen) still produce a complete set.
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(user_agent=UA, viewport={"width": 940, "height": 1080})
+        pg = ctx.new_page()
+        pg.add_init_script(_COMIX_HOOK)
+
+        try:
+            pg.goto(url, wait_until="networkidle", timeout=timeout_ms)
+        except Exception:
+            pass
+        pg.wait_for_timeout(5000)
+
+        shots_by_y: dict[int, bytes] = {}  # doc-relative Y → screenshot bytes
+
+        def _snap():
+            """Screenshot every large canvas/img currently in the DOM."""
+            for sel in ("canvas", "img"):
+                try:
+                    for el in pg.query_selector_all(sel):
+                        try:
+                            bb = el.bounding_box()
+                            if not bb or bb["height"] < 400 or bb["width"] < 400:
+                                continue
+                            # document-relative centre Y for stable deduplication
+                            doc_y = int(el.evaluate(
+                                "e => Math.round(e.getBoundingClientRect().top"
+                                " + window.scrollY + e.getBoundingClientRect().height / 2)"
+                            ))
+                            if doc_y in shots_by_y:
+                                continue
+                            shots_by_y[doc_y] = el.screenshot(type="jpeg", quality=90)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        prev_h = -1
+        for _ in range(300):
+            pg.mouse.wheel(0, 1200)
+            pg.wait_for_timeout(200)
+            _snap()
+            h = pg.evaluate("document.body.scrollHeight")
+            if h == prev_h:
+                pg.wait_for_timeout(2000)
+                if pg.evaluate("document.body.scrollHeight") == prev_h:
+                    break
+            prev_h = h
+
+        pg.wait_for_timeout(2000)
+        _snap()  # final pass after all content settles
+        browser.close()
+
+    return [v for _, v in sorted(shots_by_y.items())]
+
+
 def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
     """Render the chapter in a headless browser and download its images."""
     os.makedirs(dest_dir, exist_ok=True)
+    _ensure_chromium()
+
+    host = urlparse(chapter_url).netloc.lower()
+    if "comix.to" in host or "comick.io" in host or "comick.fun" in host:
+        # Render-based path: screenshot each page after the JS unscrambles it.
+        # Downloading raw URLs gives scrambled pixels (comix.to DRM).
+        shots = _render_comix(chapter_url)
+        if shots:
+            paths = []
+            for i, data in enumerate(shots):
+                out = os.path.join(dest_dir, f"{i + 1:03d}.jpg")
+                with open(out, "wb") as f:
+                    f.write(data)
+                paths.append(out)
+            return paths
+
     urls = _collect(chapter_url)
     if not urls:
         raise RuntimeError("headless browser found no chapter images on the page.")
