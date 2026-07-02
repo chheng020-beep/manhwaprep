@@ -249,11 +249,14 @@ class TextBoxItem(QGraphicsItem):
     EDGE_GRAB = 9.0  # how far from an edge still counts as grabbing that edge
     FONT_MIN = 6.0   # never shrink the font below this
     FONT_MAX = 200.0  # never grow the font above this
+    ROT_STEM = 26    # pixels from box top-edge to centre of rotation handle
+    ROT_HANDLE = 8   # radius of rotation handle circle
     _CURSORS = {
         "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
         "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
         "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor,
         "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor,
+        "rot": Qt.CrossCursor,
     }
 
     def __init__(self, n, text, x, y, w, h):
@@ -273,10 +276,12 @@ class TextBoxItem(QGraphicsItem):
         self.align = Qt.AlignHCenter | Qt.AlignVCenter
         self.gradient_colors = None   # list[str] hex colors, or None for solid fill
         self.gradient_angle = 90.0    # degrees: 0=L→R, 90=T→B
+        self.line_spacing = 1.0       # 1.0 = natural, 1.5 = 1.5× line height
         self.effect = "none"          # none|drop|glow|echo|background|hollow|neon
         self.effect_color = "#a78bfa"  # visible violet accent; user can override
         self.on_edit = None  # set by the editor: callback(item) for inline edit
         self._editing = False  # True while the inline editor overlays this box
+        self._rot_start = None        # (rot0_deg, angle0_deg) during rotation drag
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
@@ -299,9 +304,13 @@ class TextBoxItem(QGraphicsItem):
         fm = QFontMetricsF(self.font)
         flags = int(Qt.AlignHCenter) | WRAP_FLAGS
         r = fm.boundingRect(
-            QRectF(0, 0, max(8.0, self.w), 1e7), flags, self.text or " ")
+            QRectF(0, 0, max(8.0, self.w), 1e7), flags, self._plain_text or " ")
+        natural_h = r.height()
+        if self.line_spacing != 1.0 and fm.lineSpacing() > 0:
+            n = max(1, round(natural_h / fm.lineSpacing()))
+            natural_h = natural_h + (self.line_spacing - 1.0) * fm.lineSpacing() * (n - 1)
         self.prepareGeometryChange()
-        self.h = max(8.0, r.height() + 6)
+        self.h = max(8.0, natural_h + 6)
         if min_h:
             self.h = max(self.h, min_h)
         if top is not None:
@@ -314,7 +323,35 @@ class TextBoxItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:
         m = self.outline_w + self.HANDLE
-        return QRectF(-m, -m, self.w + 2 * m, self.h + 2 * m)
+        top_extra = self.ROT_STEM + self.ROT_HANDLE + 4
+        return QRectF(-m, -(m + top_extra), self.w + 2 * m, self.h + 2 * m + top_extra)
+
+    def _text_layout(self):
+        """QTextLayout with line_spacing applied. Returns (layout, total_height)."""
+        from PySide6.QtGui import QTextLayout, QTextOption
+        layout = QTextLayout(self._plain_text, self.font)
+        opt = QTextOption(self.align & Qt.AlignHorizontal_Mask)
+        opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(opt)
+        layout.beginLayout()
+        fm = QFontMetricsF(self.font)
+        lh = fm.lineSpacing() * self.line_spacing
+        y = 0.0
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(max(1.0, self.w))
+            line.setPosition(QPointF(0, y))
+            y += lh
+        layout.endLayout()
+        return layout, y
+
+    @property
+    def _plain_text(self) -> str:
+        """Text with **bold** markers stripped (used for outline/effects rendering)."""
+        import re
+        return re.sub(r'\*\*(.+?)\*\*', r'\1', self.text or '', flags=re.DOTALL)
 
     def _handles(self) -> dict:
         w, h, s = self.w, self.h, self.HANDLE
@@ -325,13 +362,16 @@ class TextBoxItem(QGraphicsItem):
         return {k: QRectF(px - s / 2, py - s / 2, s, s) for k, (px, py) in pts.items()}
 
     def _handle_at(self, pos):
+        # Rotation handle (above the box centre-top)
+        rot_pt = QPointF(self.w / 2, -self.ROT_STEM)
+        if (pos - rot_pt).manhattanLength() <= self.ROT_HANDLE + 6:
+            return "rot"
         # Corners first — they scale the font (and need a precise target).
         hs = self._handles()
         for k in ("tl", "tr", "bl", "br"):
             if hs[k].contains(pos):
                 return k
         # The WHOLE side is grabbable, like Canva — not just a tiny mid-handle.
-        # Drag any point along the left/right edge to reshape (and auto-grow).
         x, y, w, h, e = pos.x(), pos.y(), self.w, self.h, self.EDGE_GRAB
         if -e <= y <= h + e:
             if abs(x) <= e:
@@ -365,28 +405,105 @@ class TextBoxItem(QGraphicsItem):
         if g is None:
             return
         iw, ih = max(1, int(r.width())), max(1, int(r.height()))
-        # 1. Render text as white-on-transparent mask
-        mask = QImage(iw, ih, QImage.Format_ARGB32_Premultiplied)
-        mask.fill(Qt.transparent)
+        if iw < 1 or ih < 1:
+            return
+        # 1. Render text as white-on-transparent mask (Format_ARGB32 for portability)
+        mask = QImage(iw, ih, QImage.Format_ARGB32)
+        mask.fill(0)
         mp = QPainter(mask)
         mp.setFont(self.font)
-        mp.setPen(QColor(255, 255, 255, 255))
+        mp.setPen(Qt.white)
         mp.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-        mp.drawText(QRectF(0, 0, iw, ih), flags, self.text or "")
+        mp.drawText(QRectF(0, 0, iw, ih), flags, self._plain_text or "")
         mp.end()
-        # 2. Fill gradient onto solid image
-        grad_img = QImage(iw, ih, QImage.Format_ARGB32_Premultiplied)
-        grad_img.fill(Qt.transparent)
-        gp = QPainter(grad_img)
+        # 2. Fill gradient then punch out text shape with DestinationIn
+        # Format_ARGB32 (non-premultiplied) for reliable compositing on all platforms
+        out = QImage(iw, ih, QImage.Format_ARGB32)
+        out.fill(0)
+        gp = QPainter(out)
         gp.fillRect(0, 0, iw, ih, QBrush(g))
+        gp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        gp.drawImage(0, 0, mask)
         gp.end()
-        # 3. Mask gradient by text alpha (DestinationIn = keep dst where src is opaque)
-        gp2 = QPainter(grad_img)
-        gp2.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-        gp2.drawImage(0, 0, mask)
-        gp2.end()
-        # 4. Composite onto scene
-        p.drawImage(r.topLeft(), grad_img)
+        # 3. Composite onto scene using an explicit QRect (more portable than QPointF)
+        p.drawImage(QRect(0, 0, iw, ih), out)
+
+    def _draw_text_fill(self, p: QPainter, r: QRectF, flags: int) -> None:
+        """Draw solid-fill text, respecting **bold** markers and line_spacing."""
+        import re
+        runs = re.split(r'(\*\*.+?\*\*)', self.text or '', flags=re.DOTALL)
+        has_bold = any(s.startswith('**') for s in runs)
+
+        if not has_bold and self.line_spacing == 1.0:
+            p.setPen(self.fill)
+            p.drawText(r, flags, self.text or "")
+            return
+
+        # Use QTextLayout for custom line spacing and/or per-run bold
+        from PySide6.QtGui import QTextLayout, QTextOption
+        layout, total_h = self._text_layout()
+        y_off = 0.0
+        if int(self.align) & int(Qt.AlignVCenter):
+            y_off = (r.height() - total_h) / 2
+        elif int(self.align) & int(Qt.AlignBottom):
+            y_off = r.height() - total_h
+
+        if not has_bold:
+            p.setPen(self.fill)
+            layout.draw(p, QPointF(r.x(), r.y() + y_off))
+            return
+
+        # Bold runs: draw the full layout in non-bold, then overdraw bold segments
+        p.setPen(self.fill)
+        layout.draw(p, QPointF(r.x(), r.y() + y_off))
+
+        bold_font = QFont(self.font)
+        bold_font.setBold(True)
+        bold_layout = QTextLayout(
+            re.sub(r'\*\*(.+?)\*\*', r'\1', self.text or '', flags=re.DOTALL),
+            bold_font
+        )
+        opt2 = QTextOption(self.align & Qt.AlignHorizontal_Mask)
+        opt2.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        bold_layout.setTextOption(opt2)
+        bold_layout.beginLayout()
+        fm = QFontMetricsF(self.font)
+        lh = fm.lineSpacing() * self.line_spacing
+        y2 = 0.0
+        while True:
+            line = bold_layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(max(1.0, self.w))
+            line.setPosition(QPointF(0, y2))
+            y2 += lh
+        bold_layout.endLayout()
+
+        # Clip to bold character ranges so only those chars show in bold
+        bold_chars: list[tuple[int, int]] = []
+        for m in re.finditer(r'\*\*(.+?)\*\*', self.text or '', re.DOTALL):
+            # Adjust position: each **...** pair before this match removes 4 chars
+            adj = sum(4 for mm in re.finditer(r'\*\*', self.text[:m.start()]))
+            s = m.start() - adj
+            e_ = s + len(m.group(1))
+            bold_chars.append((s, e_))
+
+        for start, end in bold_chars:
+            for i in range(bold_layout.lineCount()):
+                line = bold_layout.lineAt(i)
+                ls, ll = line.textStart(), line.textLength()
+                ol_s = max(start, ls)
+                ol_e = min(end, ls + ll)
+                if ol_s >= ol_e:
+                    continue
+                x1 = line.cursorToX(ol_s)
+                x2 = line.cursorToX(ol_e)
+                clip = QRectF(x1, line.y(), x2 - x1, line.height())
+                clip.translate(r.x(), r.y() + y_off)
+                p.save()
+                p.setClipRect(clip, Qt.IntersectClip)
+                bold_layout.draw(p, QPointF(r.x(), r.y() + y_off))
+                p.restore()
 
     def paint(self, p, opt, widget=None):
         r = QRectF(0, 0, self.w, self.h)
@@ -399,21 +516,21 @@ class TextBoxItem(QGraphicsItem):
         ec = QColor(self.effect_color)
 
         # ── Effects: pre-pass (rendered before main text) ─────────────────
+        pt = self._plain_text   # **markers** stripped — used for all outline/effect passes
         eff = self.effect
-        if eff == "background" and self.text:
+        if eff == "background" and pt:
             bg = QColor(ec); bg.setAlpha(180)
             p.setBrush(bg); p.setPen(Qt.NoPen)
             p.drawRoundedRect(r, 8, 8)
-        if eff == "drop" and self.text:
+        if eff == "drop" and pt:
             shadow = QColor(0, 0, 0, 120)
             p.setPen(shadow)
-            p.drawText(r.translated(3, 3), flags, self.text)
-        if eff == "echo" and self.text:
+            p.drawText(r.translated(3, 3), flags, pt)
+        if eff == "echo" and pt:
             echo_c = QColor(self.fill); echo_c.setAlpha(80)
             p.setPen(echo_c)
-            p.drawText(r.translated(4, 4), flags, self.text)
-        if eff == "glow" and self.text:
-            # Use 3 passes at increasing radii so glow is visible outside the outline
+            p.drawText(r.translated(4, 4), flags, pt)
+        if eff == "glow" and pt:
             for alpha, offsets in (
                 (80, ((-5,0),(5,0),(0,-5),(0,5),(-4,-4),(4,-4),(-4,4),(4,4))),
                 (100, ((-3,0),(3,0),(0,-3),(0,3),(-2,-2),(2,-2),(-2,2),(2,2))),
@@ -422,36 +539,35 @@ class TextBoxItem(QGraphicsItem):
                 for gx, gy in offsets:
                     gc = QColor(ec); gc.setAlpha(alpha)
                     p.setPen(gc)
-                    p.drawText(r.translated(gx, gy), flags, self.text)
-        if eff == "neon" and self.text:
+                    p.drawText(r.translated(gx, gy), flags, pt)
+        if eff == "neon" and pt:
             for alpha, offs in ((60, 5), (100, 3), (140, 1)):
                 for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs),(-offs,-offs),(offs,-offs),(-offs,offs),(offs,offs)):
                     gc = QColor(ec); gc.setAlpha(alpha)
                     p.setPen(gc)
-                    p.drawText(r.translated(gx, gy), flags, self.text)
+                    p.drawText(r.translated(gx, gy), flags, pt)
 
-        # ── Outline (white halo by default; colored+thick for outline effect) ──
+        # ── Outline (white halo; colored+thick for outline effect) ──────────
         ow = min(12, max(self.outline_w, round(self.font.pointSizeF() * 0.10)))
         outline_pen = self.outline
         if eff == "outline":
-            ow = max(ow, 6)               # thicker border
-            outline_pen = ec              # use effect_color (accent) instead of white
-        if ow > 0 and self.text and eff != "hollow":
+            ow = max(ow, 6)
+            outline_pen = ec
+        if ow > 0 and pt and eff != "hollow":
             p.setPen(outline_pen)
             for dx in range(-ow, ow + 1):
                 for dy in range(-ow, ow + 1):
                     if (dx or dy) and dx * dx + dy * dy <= ow * ow:
-                        p.drawText(r.translated(dx, dy), flags, self.text)
+                        p.drawText(r.translated(dx, dy), flags, pt)
 
         # ── Main text fill ─────────────────────────────────────────────────
-        if eff == "hollow" and self.text:
-            # stroke-only: build path and stroke it
+        if eff == "hollow" and pt:
             path = QPainterPath()
             fm = QFontMetricsF(self.font)
             lh = fm.lineSpacing()
-            total_h = fm.boundingRect(QRectF(0, 0, self.w, 1e7), flags, self.text).height()
+            total_h = fm.boundingRect(QRectF(0, 0, self.w, 1e7), flags, pt).height()
             y0 = max(fm.ascent(), (self.h - total_h) / 2 + fm.ascent())
-            for line in (self.text or "").split("\n") or [""]:
+            for line in (pt or "").split("\n") or [""]:
                 lw = fm.horizontalAdvance(line)
                 ha = int(self.align) & (int(Qt.AlignLeft)|int(Qt.AlignHCenter)|int(Qt.AlignRight))
                 x0 = (self.w - lw)/2 if ha == int(Qt.AlignHCenter) else (
@@ -463,8 +579,7 @@ class TextBoxItem(QGraphicsItem):
         elif self.gradient_colors:
             self._draw_gradient_text(p, r, flags)
         else:
-            p.setPen(self.fill)
-            p.drawText(r, flags, self.text)
+            self._draw_text_fill(p, r, flags)
 
         p.restore()
         if self.isSelected():
@@ -478,6 +593,19 @@ class TextBoxItem(QGraphicsItem):
             p.setPen(QPen(QColor(0, 150, 255)))
             for hr in self._handles().values():
                 p.drawRect(hr)
+            # Rotation handle: circle above the box with a short stem
+            rx, ry = self.w / 2, -self.ROT_STEM
+            p.setPen(QPen(QColor(0, 150, 255), 1))
+            p.drawLine(QPointF(self.w / 2, 0), QPointF(rx, ry + self.ROT_HANDLE))
+            p.setBrush(QColor(255, 255, 255))
+            p.drawEllipse(QPointF(rx, ry), self.ROT_HANDLE, self.ROT_HANDLE)
+            # Arrow arc hint inside the circle
+            p.setPen(QPen(QColor(0, 150, 255), 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawArc(
+                QRectF(rx - self.ROT_HANDLE + 3, ry - self.ROT_HANDLE + 3,
+                       (self.ROT_HANDLE - 3) * 2, (self.ROT_HANDLE - 3) * 2),
+                30 * 16, 300 * 16)
 
     def hoverMoveEvent(self, e):
         k = self._handle_at(e.pos()) if self.isSelected() else None
@@ -486,7 +614,13 @@ class TextBoxItem(QGraphicsItem):
 
     def mousePressEvent(self, e):
         k = self._handle_at(e.pos()) if self.isSelected() else None
-        if k:
+        if k == "rot":
+            self._resize = "rot"
+            scene_c = self.mapToScene(QPointF(self.w / 2, self.h / 2))
+            dp = e.scenePos() - scene_c
+            self._rot_start = (self.rotation(), math.degrees(math.atan2(dp.y(), dp.x())))
+            e.accept()
+        elif k:
             self._resize = k
             self._start = (self.w, self.h, self.x(), self.y(),
                            self.max_size, e.scenePos())
@@ -502,6 +636,15 @@ class TextBoxItem(QGraphicsItem):
         • top/bottom set a manual height (a box taller than its text)."""
         if not self._resize:
             super().mouseMoveEvent(e)
+            return
+        if self._resize == "rot" and self._rot_start:
+            rot0, angle0 = self._rot_start
+            scene_c = self.mapToScene(QPointF(self.w / 2, self.h / 2))
+            dp = e.scenePos() - scene_c
+            angle1 = math.degrees(math.atan2(dp.y(), dp.x()))
+            self.setRotation(rot0 + (angle1 - angle0))
+            self.update()
+            e.accept()
             return
         w0, h0, x0, y0, ms0, sp0 = self._start
         d = e.scenePos() - sp0
@@ -542,6 +685,7 @@ class TextBoxItem(QGraphicsItem):
     def mouseReleaseEvent(self, e):
         if self._resize:
             self._resize = None
+            self._rot_start = None
             e.accept()
         else:
             super().mouseReleaseEvent(e)
@@ -565,6 +709,7 @@ class TextBoxItem(QGraphicsItem):
             "rot": self.rotation(),
             "gradient_colors": self.gradient_colors,
             "gradient_angle": self.gradient_angle,
+            "line_spacing": self.line_spacing,
             "effect": self.effect,
             "effect_color": self.effect_color,
         }
@@ -869,6 +1014,16 @@ class _InlineEdit(QTextEdit):
         self._on_done()
 
     def keyPressEvent(self, e):
+        # Ctrl/Cmd+B: wrap selected text in **bold** markers (toggle)
+        if e.key() == Qt.Key_B and e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            cur = self.textCursor()
+            if cur.hasSelection():
+                sel = cur.selectedText()
+                if sel.startswith("**") and sel.endswith("**") and len(sel) > 4:
+                    cur.insertText(sel[2:-2])  # unwrap
+                else:
+                    cur.insertText(f"**{sel}**")  # wrap
+            return
         # Enter / Shift+Enter → insert a newline (multi-line editing).
         # Ctrl/Cmd+Enter or Escape → commit.
         if e.key() == Qt.Key_Escape:
@@ -1421,6 +1576,20 @@ class TypesetEditor(QWidget):
         tg.addWidget(grad_hdr)
         tg.addWidget(self._grad_panel)
 
+        lsrow = QHBoxLayout()
+        lsrow.addWidget(QLabel("Line spacing"))
+        self.line_spacing_slider = QSlider(Qt.Horizontal)
+        self.line_spacing_slider.setRange(80, 300)   # 0.8× – 3.0×
+        self.line_spacing_slider.setValue(100)
+        self.line_spacing_slider.setTickPosition(QSlider.TicksBelow)
+        self.line_spacing_slider.setTickInterval(20)
+        self._ls_lbl = QLabel("1.0×")
+        self._ls_lbl.setFixedWidth(36)
+        self.line_spacing_slider.valueChanged.connect(self._line_spacing_changed)
+        lsrow.addWidget(self.line_spacing_slider, 1)
+        lsrow.addWidget(self._ls_lbl)
+        tg.addLayout(lsrow)
+
         rrow = QHBoxLayout()
         rrow.addWidget(QLabel("Rotate"))
         self.rot = QSpinBox(); self.rot.setRange(-180, 180); self.rot.setSuffix("°")
@@ -1580,6 +1749,7 @@ class TypesetEditor(QWidget):
                 it.align = Qt.AlignmentFlag(d["align"])
             it.gradient_colors = d.get("gradient_colors")
             it.gradient_angle = d.get("gradient_angle", 90.0)
+            it.line_spacing = float(d.get("line_spacing", 1.0))
             it.effect = d.get("effect", "none")
             it.effect_color = d.get("effect_color", "#000000")
             self.scene.addItem(it)
@@ -1673,6 +1843,11 @@ class TypesetEditor(QWidget):
         self.rot.blockSignals(True)
         self.rot.setValue(int(it.rotation()))
         self.rot.blockSignals(False)
+        self.line_spacing_slider.blockSignals(True)
+        ls_val = int(round(getattr(it, "line_spacing", 1.0) * 100))
+        self.line_spacing_slider.setValue(max(80, min(300, ls_val)))
+        self._ls_lbl.setText(f"{ls_val / 100:.1f}×")
+        self.line_spacing_slider.blockSignals(False)
 
     def _text_changed(self):
         for it in self._selected():
@@ -2300,6 +2475,16 @@ class TypesetEditor(QWidget):
         for it in self._selected():
             it.setTransformOriginPoint(it.w / 2, it.h / 2)
             it.setRotation(v)
+        self._record_if_changed()
+
+    def _line_spacing_changed(self, v):
+        factor = v / 100.0
+        self._ls_lbl.setText(f"{factor:.1f}×")
+        for it in self._selected():
+            it.line_spacing = factor
+            it.prepareGeometryChange()
+            it._refit()
+            it.update()
         self._record_if_changed()
 
     def _pick_fill(self):
