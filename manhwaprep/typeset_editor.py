@@ -1730,6 +1730,11 @@ class TypesetEditor(QWidget):
 
     # -- segment handling ----------------------------------------------
     def _commit_items(self):
+        # Close any open inline editor FIRST: every navigation / export /
+        # undo path goes through here, and clearing the scene with a live
+        # edit overlay both loses the typed text and crashes on the dangling
+        # proxy widget.
+        self._commit_inline()
         if self.segments:
             seg = self.segments[self.seg_idx]
             seg["_state"] = (
@@ -1752,6 +1757,7 @@ class TypesetEditor(QWidget):
         """(Re)build the text + image items from a state list, replacing any
         current ones. Accepts both base64 ('data') and in-memory ('pix') images
         so it serves project-load AND undo snapshots."""
+        self._commit_inline()  # never rebuild under a live edit overlay
         for it in self.items + self.images:
             self.scene.removeItem(it)
         self.items = []
@@ -1794,6 +1800,7 @@ class TypesetEditor(QWidget):
     def _load_segment(self, idx):
         if not self.segments:
             return
+        self._commit_inline()  # scene.clear() would delete a live edit overlay
         seg = self.segments[idx]
         self.scene.clear()
         self.items = []
@@ -2024,8 +2031,12 @@ class TypesetEditor(QWidget):
             # final), but vertically centre the text the way the box does so it
             # doesn't visibly jump up when you start editing. Grow only if the
             # text is genuinely taller than the box.
-            te = self._inline_proxy.widget() if self._inline_proxy else None
-            if te is None:
+            import shiboken6
+            proxy = self._inline_proxy
+            if proxy is None or not shiboken6.isValid(proxy):
+                return
+            te = proxy.widget()
+            if te is None or not shiboken6.isValid(item):
                 return
             doc_h = te.document().size().height()
             h = max(item.h, doc_h + 2)
@@ -2067,11 +2078,17 @@ class TypesetEditor(QWidget):
             return
         proxy, it = self._inline_proxy, self._inline_item
         self._inline_proxy, self._inline_item = None, None
-        it.text = proxy.widget().toPlainText()
-        it._editing = False  # box paints its own (outlined) text again
-        it._refit()
-        it.update()
-        if proxy.scene():
+        # scene.clear() (canvas switch / undo) deletes the C++ side of the
+        # proxy and the item while we still hold the Python wrappers — touching
+        # them then is a hard crash, so verify both are alive first.
+        import shiboken6
+        if shiboken6.isValid(it):
+            if shiboken6.isValid(proxy) and proxy.widget() is not None:
+                it.text = proxy.widget().toPlainText()
+            it._editing = False  # box paints its own (outlined) text again
+            it._refit()
+            it.update()
+        if shiboken6.isValid(proxy) and proxy.scene():
             proxy.scene().removeItem(proxy)
         self._sync_panel()
         self._record_if_changed()

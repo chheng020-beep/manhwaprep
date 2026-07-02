@@ -809,7 +809,34 @@ def _ensure_models_or_quit(app) -> bool:
         return False
 
 
+def _install_crash_log():
+    """Write native crashes (faulthandler) and unhandled Python exceptions to
+    ~/ManhwaPrep/crash.log so field crashes on the EXE leave a trace, and keep
+    the app alive on Python exceptions instead of aborting."""
+    import faulthandler
+    import traceback
+    from datetime import datetime
+
+    log_dir = os.path.expanduser("~/ManhwaPrep")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        f = open(os.path.join(log_dir, "crash.log"), "a", buffering=1,
+                 encoding="utf-8", errors="replace")
+        f.write(f"\n--- session {datetime.now().isoformat()} ---\n")
+        faulthandler.enable(file=f)
+    except Exception:
+        f = None
+
+    def _hook(t, v, tb):
+        if f is not None:
+            traceback.print_exception(t, v, tb, file=f)
+        traceback.print_exception(t, v, tb)
+
+    sys.excepthook = _hook
+
+
 def main():
+    _install_crash_log()
     app = QApplication(sys.argv)
     from PySide6.QtGui import QPixmapCache
     QPixmapCache.setCacheLimit(256 * 1024)  # 256 MB (default ~10 MB)
