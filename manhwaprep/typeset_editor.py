@@ -2085,6 +2085,9 @@ class TypesetEditor(QWidget):
         ):
             self._paste_clipboard_image()
             return
+        if e.key() == Qt.Key_T and e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            self._add_box()
+            return
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.scene.selectedItems():
             self._delete_selected()
             return
