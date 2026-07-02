@@ -69,6 +69,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QToolButton,
     QVBoxLayout,
+    QGridLayout,
     QWidget,
 )
 
@@ -273,7 +274,7 @@ class TextBoxItem(QGraphicsItem):
         self.gradient_colors = None   # list[str] hex colors, or None for solid fill
         self.gradient_angle = 90.0    # degrees: 0=L→R, 90=T→B
         self.effect = "none"          # none|drop|glow|echo|background|hollow|neon
-        self.effect_color = "#000000"
+        self.effect_color = "#a78bfa"  # visible violet accent; user can override
         self.on_edit = None  # set by the editor: callback(item) for inline edit
         self._editing = False  # True while the inline editor overlays this box
         self.setFlags(
@@ -415,23 +416,31 @@ class TextBoxItem(QGraphicsItem):
             p.setPen(echo_c)
             p.drawText(r.translated(4, 4), flags, self.text)
         if eff == "glow" and self.text:
-            for gx, gy in ((-2,0),(2,0),(0,-2),(0,2),(-1,-1),(1,-1),(-1,1),(1,1)):
-                gc = QColor(ec); gc.setAlpha(60)
-                p.setPen(gc)
-                p.drawText(r.translated(gx, gy), flags, self.text)
+            # Use 3 passes at increasing radii so glow is visible outside the outline
+            for alpha, offsets in (
+                (80, ((-5,0),(5,0),(0,-5),(0,5),(-4,-4),(4,-4),(-4,4),(4,4))),
+                (100, ((-3,0),(3,0),(0,-3),(0,3),(-2,-2),(2,-2),(-2,2),(2,2))),
+                (120, ((-1,0),(1,0),(0,-1),(0,1))),
+            ):
+                for gx, gy in offsets:
+                    gc = QColor(ec); gc.setAlpha(alpha)
+                    p.setPen(gc)
+                    p.drawText(r.translated(gx, gy), flags, self.text)
         if eff == "neon" and self.text:
-            for alpha, offs in ((40, 3), (60, 2), (80, 1)):
-                for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs)):
+            for alpha, offs in ((60, 5), (100, 3), (140, 1)):
+                for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs),(-offs,-offs),(offs,-offs),(-offs,offs),(offs,offs)):
                     gc = QColor(ec); gc.setAlpha(alpha)
                     p.setPen(gc)
                     p.drawText(r.translated(gx, gy), flags, self.text)
 
-        # ── Outline (white halo, or explicit outline effect) ───────────────
+        # ── Outline (white halo by default; colored+thick for outline effect) ──
         ow = min(12, max(self.outline_w, round(self.font.pointSizeF() * 0.10)))
+        outline_pen = self.outline
         if eff == "outline":
-            ow = max(ow, 3)
+            ow = max(ow, 6)               # thicker border
+            outline_pen = ec              # use effect_color (accent) instead of white
         if ow > 0 and self.text and eff != "hollow":
-            p.setPen(self.outline)
+            p.setPen(outline_pen)
             for dx in range(-ow, ow + 1):
                 for dy in range(-ow, ow + 1):
                     if (dx or dy) and dx * dx + dy * dy <= ow * ow:
@@ -1033,7 +1042,7 @@ class _EffectsPanel(QWidget):
         self._ec_btn = QPushButton()
         self._ec_btn.setFixedSize(36, 22)
         self._ec_btn.setStyleSheet(
-            "background:#000000;border-radius:4px;border:1px solid #444;")
+            "background:#a78bfa;border-radius:4px;border:1px solid #444;")
         self._ec_btn.setToolTip("Effect colour (glow/neon/shadow)")
         self._ec_btn.clicked.connect(self._pick_ec)
         ec_row.addWidget(self._ec_btn)
@@ -1045,7 +1054,7 @@ class _EffectsPanel(QWidget):
         ec_row.addStretch()
         lay.addLayout(ec_row)
 
-        self._ec_color = "#000000"
+        self._ec_color = "#a78bfa"
 
     def _make_tile(self, key, label, preview_color):
         btn = QPushButton()
