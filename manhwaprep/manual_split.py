@@ -6,10 +6,12 @@ import re
 import subprocess
 import sys
 
+import numpy as np
 from PIL import Image
 from PySide6.QtCore import (
     QPointF,
     QRectF,
+    QSettings,
     Qt,
     QTimer,
     Signal,
@@ -49,6 +51,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -57,11 +60,57 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
 
 _YELLOW = QColor("#FFD700")
 _ORANGE = QColor("#FF8C00")
+_GREEN = QColor("#27ae60")   # cut sits in a blank gutter — safe
+_RED = QColor("#e74c3c")     # cut slices through artwork
 _BAND = 10   # semi-transparent highlight band px each side
 
 
 def _natural_key(s: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
+class _GhostLine(QGraphicsItem):
+    """Preview line that follows the cursor before a click places a real cut."""
+
+    def __init__(self, img_w: float, scene_ref):
+        super().__init__()
+        self._img_w = img_w
+        self._scene_ref = scene_ref
+        self._quiet: bool | None = None
+        self._label = ""
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setAcceptHoverEvents(False)
+        self.setZValue(5)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, -18, self._img_w, 36)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        if self._quiet is None:
+            color = QColor(_YELLOW)
+        else:
+            color = QColor(_GREEN if self._quiet else _RED)
+        color.setAlpha(180)
+        pen = QPen(color, 2, Qt.DashLine)
+        pen.setDashPattern([6, 6])
+        painter.setPen(pen)
+        painter.drawLine(QPointF(0, 0), QPointF(self._img_w, 0))
+
+        if self._label:
+            font = QFont()
+            font.setPointSize(9)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(self._label)
+            th = fm.height()
+            pad = 3
+            box = QRectF(self._img_w - tw - pad * 2 - 6, -(th // 2) - pad,
+                         tw + pad * 2, th + pad * 2)
+            painter.setBrush(QBrush(QColor(30, 30, 30, 190)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(box, 3, 3)
+            painter.setPen(QPen(color))
+            painter.drawText(box, Qt.AlignCenter, self._label)
 
 
 class CutLineItem(QGraphicsItem):
@@ -93,16 +142,26 @@ class CutLineItem(QGraphicsItem):
         return QRectF(0, -(_BAND + 2), self._img_w, (_BAND + 2) * 2)
 
     def paint(self, painter: QPainter, option, widget=None):
-        color = _ORANGE if self._hovered else _YELLOW
+        quiet = self._scene_ref.is_quiet(self.pos().y())
+        if quiet is None:
+            color = _ORANGE if self._hovered else _YELLOW
+        else:
+            color = _GREEN if quiet else _RED
+            if self._hovered:
+                color = color.lighter(125)
+
+        active = self._hovered or self.isSelected()
 
         # semi-transparent band
         band_color = QColor(color)
-        band_color.setAlpha(55)
+        band_color.setAlpha(85 if active else 50)
         painter.fillRect(QRectF(0, -_BAND, self._img_w, _BAND * 2), band_color)
 
-        # dashed line
-        pen = QPen(color, 3, Qt.DashLine)
-        pen.setDashPattern([8, 4])
+        # dashed line (solid + thicker when selected so Delete targeting is obvious)
+        pen = QPen(color, 4 if self.isSelected() else 3,
+                   Qt.SolidLine if self.isSelected() else Qt.DashLine)
+        if not self.isSelected():
+            pen.setDashPattern([8, 4])
         painter.setPen(pen)
         painter.drawLine(QPointF(0, 0), QPointF(self._img_w, 0))
 
@@ -138,6 +197,14 @@ class CutLineItem(QGraphicsItem):
         self._scene_ref.remove_line(self)
         super().mouseDoubleClickEvent(e)
 
+    def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            e.accept()
+            # deferred: removing an item from inside its own handler is unsafe
+            QTimer.singleShot(0, lambda: self._scene_ref.remove_line(self))
+            return
+        super().mousePressEvent(e)
+
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
         self._scene_ref._renumber()  # keep labels ordered while dragging past others
@@ -145,9 +212,17 @@ class CutLineItem(QGraphicsItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange and isinstance(value, QPointF):
+            new_y = value.y()
+            # magnetic snap to nearby blank gutters while dragging with the
+            # mouse (Alt = free placement); programmatic moves stay exact.
+            if (QApplication.mouseButtons() & Qt.LeftButton
+                    and not QApplication.keyboardModifiers() & Qt.AltModifier):
+                new_y = self._scene_ref.snap_y(new_y)
             # clamp X=0, clamp Y inside image bounds
-            new_y = max(1.0, min(self._img_h - 1, value.y()))
-            self.setToolTip(f"y: {int(new_y)} px  (double-click to delete)")
+            new_y = max(1.0, min(self._img_h - 1, new_y))
+            scale = self._scene_ref._display_scale or 1.0
+            self.setToolTip(
+                f"y: {int(round(new_y / scale))} px  (right-click to delete)")
             return QPointF(0.0, new_y)
         return super().itemChange(change, value)
 
@@ -164,18 +239,91 @@ class ManualSplitScene(QGraphicsScene):
         self._img_w = 0.0
         self._img_h = 0.0
         self._press_pos = None  # scene pos of a press on empty space / the image
+        self._ghost: _GhostLine | None = None
+        self._row_cost: np.ndarray | None = None  # per-display-row slice cost
+        self._quiet_thr = 0.0
+        self._display_scale = 1.0
+        self._snap_enabled = True
 
     def reset(self, w: float, h: float):
         """Clear all items AND the tracked line list, then set new image size."""
         self._lines.clear()
+        self._ghost = None       # C++ side dies in clear(); drop the wrapper first
+        self._row_cost = None
         self.clear()  # QGraphicsScene.clear() — removes all QGraphicsItems
         self._img_w = w
         self._img_h = h
+        ghost = _GhostLine(w, self)
+        ghost.setVisible(False)
+        self.addItem(ghost)
+        self._ghost = ghost
 
     def set_image_size(self, w: float, h: float):
         self._img_w = w
         self._img_h = h
 
+    def set_display_scale(self, s: float):
+        self._display_scale = s
+
+    def set_snap_enabled(self, on: bool):
+        self._snap_enabled = bool(on)
+
+    def set_analysis(self, cost: np.ndarray | None, thr: float):
+        """Per-display-row busyness profile: drives green/red line colour and
+        snap-to-gutter. None disables both (falls back to yellow lines)."""
+        self._row_cost = cost
+        self._quiet_thr = thr
+
+    # -- gutter intelligence ------------------------------------------------
+    def is_quiet(self, y: float) -> bool | None:
+        """True if row y sits in a blank band, False if in artwork, None if
+        no profile is available."""
+        if self._row_cost is None or len(self._row_cost) == 0:
+            return None
+        i = int(max(0, min(len(self._row_cost) - 1, y)))
+        return bool(self._row_cost[i] < self._quiet_thr)
+
+    def snap_y(self, y: float) -> float:
+        """Magnet a desired row toward the centre of the nearest blank gutter
+        within a small radius. Returns y unchanged if snapping is off, no
+        profile exists, or no quiet row is nearby."""
+        if not self._snap_enabled or self._row_cost is None:
+            return y
+        c = self._row_cost
+        h = len(c)
+        if h == 0:
+            return y
+        r = int(max(16, min(80, h * 0.008)))
+        lo = max(0, int(y) - r)
+        hi = min(h, int(y) + r + 1)
+        if hi <= lo:
+            return y
+        seg = c[lo:hi]
+        quiet = seg < self._quiet_thr
+        if not quiet.any():
+            return y
+        idx = np.arange(lo, hi)
+        spread = float(seg.max() - seg.min()) + 1.0
+        score = seg + spread * 0.02 * np.abs(idx - y)
+        score = np.where(quiet, score, np.inf)
+        return float(idx[int(np.argmin(score))])
+
+    # -- ghost preview -------------------------------------------------------
+    def _update_ghost(self, y: float):
+        if self._ghost is None:
+            return
+        scale = self._display_scale or 1.0
+        self._ghost._quiet = self.is_quiet(y)
+        self._ghost._label = f"{int(round(y / scale)):,} px"
+        self._ghost.setPos(0, y)
+        self._ghost.setVisible(True)
+        self._ghost.update()
+
+    def _set_ghost_visible(self, vis: bool):
+        if self._ghost is not None:
+            self._ghost.setVisible(vis)
+
+    # -- mouse ---------------------------------------------------------------
     def mousePressEvent(self, e):
         # Remember presses on empty space / the image; the line is added on
         # release only if the mouse didn't move (a real click, not a drag).
@@ -183,9 +331,24 @@ class ManualSplitScene(QGraphicsScene):
         if e.button() == Qt.LeftButton:
             tr = self.views()[0].transform() if self.views() else QTransform()
             hit = self.itemAt(e.scenePos(), tr)
-            if hit is None or isinstance(hit, QGraphicsPixmapItem):
+            if hit is None or isinstance(hit, (QGraphicsPixmapItem, _GhostLine)):
                 self._press_pos = e.scenePos()
         super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if e.buttons():
+            self._set_ghost_visible(False)
+        else:
+            pos = e.scenePos()
+            tr = self.views()[0].transform() if self.views() else QTransform()
+            hit = self.itemAt(pos, tr)
+            if (not isinstance(hit, CutLineItem)
+                    and 0 < pos.y() < self._img_h
+                    and 0 <= pos.x() <= self._img_w):
+                self._update_ghost(self.snap_y(pos.y()))
+            else:
+                self._set_ghost_visible(False)
+        super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self._press_pos is not None:
@@ -194,16 +357,20 @@ class ManualSplitScene(QGraphicsScene):
             if abs(d.x()) < 4 and abs(d.y()) < 4:
                 y = e.scenePos().y()
                 if 0 < y < self._img_h:
+                    if not e.modifiers() & Qt.AltModifier:
+                        y = self.snap_y(y)
                     self._add_line(y)
                     e.accept()
                     return
         super().mouseReleaseEvent(e)
 
+    # -- line management -------------------------------------------------------
     def _add_line(self, y: float):
         y = max(1.0, min(self._img_h - 1, y))
         line = CutLineItem(y, self._img_w, self._img_h, self)
         self.addItem(line)
         self._lines.append(line)
+        self._set_ghost_visible(False)
         self._renumber()
         self.cuts_changed.emit()
 
@@ -246,6 +413,9 @@ class ManualSplitView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(QCursor(Qt.CrossCursor))
+        # hover moves must reach the scene for the ghost preview line
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
         self._panning = False
         self._pan_start = None
         self._space_held = False
@@ -264,10 +434,35 @@ class ManualSplitView(QGraphicsView):
         else:
             super().wheelEvent(e)
 
+    def _selected_lines(self) -> list[CutLineItem]:
+        sc = self.scene()
+        if not isinstance(sc, ManualSplitScene):
+            return []
+        return [i for i in sc.selectedItems() if isinstance(i, CutLineItem)]
+
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Space:
             self._space_held = True
             self.setCursor(QCursor(Qt.OpenHandCursor))
+        elif e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            sel = self._selected_lines()
+            if sel:
+                for it in sel:
+                    self.scene().remove_line(it)
+                e.accept()
+                return
+        elif e.key() in (Qt.Key_Up, Qt.Key_Down):
+            sel = self._selected_lines()
+            if sel:
+                step = 10 if e.modifiers() & Qt.ShiftModifier else 1
+                dy = -step if e.key() == Qt.Key_Up else step
+                for it in sel:
+                    it.setPos(0, it.pos().y() + dy)  # itemChange clamps
+                sc = self.scene()
+                sc._renumber()
+                sc.cuts_changed.emit()
+                e.accept()
+                return
         super().keyPressEvent(e)
 
     def keyReleaseEvent(self, e):
@@ -275,6 +470,12 @@ class ManualSplitView(QGraphicsView):
             self._space_held = False
             self.setCursor(QCursor(Qt.CrossCursor))
         super().keyReleaseEvent(e)
+
+    def leaveEvent(self, e):
+        sc = self.scene()
+        if isinstance(sc, ManualSplitScene):
+            sc._set_ghost_visible(False)
+        super().leaveEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MiddleButton or (self._space_held and e.button() == Qt.LeftButton):
@@ -346,6 +547,7 @@ class ManualSplitWidget(QWidget):
         self._img_h = 0
         self._display_scale = 1.0  # display px = image px * scale (≤ 1.0)
         self._cuts_by_path: dict[str, list[int]] = {}  # full-res cut ys per image
+        self._settings = QSettings("ManhwaPrep", "ManhwaPrep")
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -388,7 +590,12 @@ class ManualSplitWidget(QWidget):
         self._scene.cuts_changed.connect(self._on_cuts_changed)
         root.addWidget(self._view, 1)
 
-        hint = QLabel("Click on the image to add a cut line · drag to reposition · double-click to delete")
+        hint = QLabel(
+            "Click to add a cut (snaps to blank gaps — hold Alt to place freely) · "
+            "drag to move · right-click or double-click to delete\n"
+            "Green line = safe gap, red = cutting through art · "
+            "Delete key removes selected · ↑/↓ nudge (Shift = 10 px)"
+        )
         hint.setStyleSheet("color:#888;font-size:11px;")
         hint.setAlignment(Qt.AlignCenter)
         hint.setVisible(False)
@@ -398,20 +605,43 @@ class ManualSplitWidget(QWidget):
         # controls row
         ctrl = QHBoxLayout()
         self._add_btn = QPushButton("+ Add cut line")
-        self._add_btn.clicked.connect(self._scene.add_line_at_center)
+        self._add_btn.clicked.connect(self._add_line_at_view_center)
         self._add_btn.setEnabled(False)
         self._clear_btn = QPushButton("Clear all")
         self._clear_btn.clicked.connect(self._scene.clear_lines)
         self._clear_btn.setEnabled(False)
         ctrl.addWidget(self._add_btn)
         ctrl.addWidget(self._clear_btn)
+        self._snap_chk = QCheckBox("Snap to gaps")
+        self._snap_chk.setChecked(True)
+        self._snap_chk.toggled.connect(self._scene.set_snap_enabled)
+        ctrl.addWidget(self._snap_chk)
+        ctrl.addSpacing(16)
+        ctrl.addWidget(QLabel("Auto:"))
+        self._auto_spin = QSpinBox()
+        self._auto_spin.setRange(2, 30)
+        self._auto_spin.setValue(5)
+        self._auto_spin.setSuffix(" parts")
+        ctrl.addWidget(self._auto_spin)
+        self._auto_btn = QPushButton("Auto place cuts")
+        self._auto_btn.clicked.connect(self._auto_cuts)
+        self._auto_btn.setEnabled(False)
+        ctrl.addWidget(self._auto_btn)
         ctrl.addStretch(1)
         root.addLayout(ctrl)
+
+        # live part-height readout
+        self._parts_lab = QLabel("")
+        self._parts_lab.setWordWrap(True)
+        self._parts_lab.setStyleSheet("color:#666;font-size:11px;")
+        root.addWidget(self._parts_lab)
 
         # output row
         out_row = QHBoxLayout()
         out_row.addWidget(QLabel("Output:"))
-        default_out = os.path.expanduser("~/Desktop/ManhwaPrep/splits")
+        default_out = self._settings.value(
+            "manual_split/out_dir",
+            os.path.expanduser("~/Desktop/ManhwaPrep/splits"))
         self._out_edit = QLineEdit(default_out)
         out_row.addWidget(self._out_edit, 1)
         out_browse = QPushButton("…")
@@ -462,6 +692,7 @@ class ManualSplitWidget(QWidget):
                                               self._out_edit.text())
         if p:
             self._out_edit.setText(p)
+            self._settings.setValue("manual_split/out_dir", p)
 
     def load_image(self, path: str):
         self._image_path = path
@@ -502,6 +733,13 @@ class ManualSplitWidget(QWidget):
     def _load_pixmap(self, path: str):
         self._store_current_cuts()  # keep the cuts of the image we're leaving
 
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._load_pixmap_inner(path)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _load_pixmap_inner(self, path: str):
         # Load with PIL: Qt refuses images taller than 32767 px, which long
         # stitched strips routinely exceed. Oversized images are displayed
         # downscaled; cuts are mapped back to full resolution when splitting.
@@ -530,6 +768,8 @@ class ManualSplitWidget(QWidget):
         # reset() clears _lines list AND calls QGraphicsScene.clear() together
         # so no stale C++ item references remain
         self._scene.reset(float(disp_w), float(disp_h))
+        self._scene.set_display_scale(scale)
+        self._scene.set_analysis(*self._analyze_rows(img))
 
         pix_item = QGraphicsPixmapItem(pm)
         pix_item.setZValue(0)
@@ -546,12 +786,31 @@ class ManualSplitWidget(QWidget):
         self._drop.setVisible(False)
         self._add_btn.setEnabled(True)
         self._clear_btn.setEnabled(True)
+        self._auto_btn.setEnabled(True)
         self._split_btn.setEnabled(True)
         self._on_cuts_changed()
         # Fit AFTER the layout pass — fitting while the view is still hidden /
         # unsized produced a broken initial zoom. Tall strips fit to width and
         # start at the top (fitting the whole strip makes it a useless sliver).
         QTimer.singleShot(0, self._fit_initial)
+
+    @staticmethod
+    def _analyze_rows(img: Image.Image):
+        """Per-display-row slice cost (low in blank gutters, high in artwork)
+        plus a 'quiet' threshold — drives green/red lines, snapping, auto-cuts."""
+        try:
+            w, h = img.size
+            aw = max(2, min(w, 220))  # narrow strip is plenty for row stats
+            small = img.resize((aw, h), Image.BILINEAR).convert("L")
+            g = np.asarray(small, dtype=np.float32)
+            var = g.var(axis=1) / 255.0
+            grad = np.abs(np.diff(g, axis=1)).mean(axis=1)
+            cost = np.convolve(var + grad, np.ones(5) / 5.0, mode="same")
+            p10, p90 = np.percentile(cost, [10, 90])
+            thr = float(max(2.0, min(6.0, p10 + 0.10 * (p90 - p10))))
+            return cost, thr
+        except Exception:
+            return None, 0.0
 
     def _fit_initial(self):
         sr = self._scene.sceneRect()
@@ -567,10 +826,57 @@ class ManualSplitWidget(QWidget):
             self._view.fitInView(sr, Qt.KeepAspectRatio)
 
     # -- cuts --------------------------------------------------------------
+    def _add_line_at_view_center(self):
+        """Add a cut at the middle of what's currently on screen (snapped),
+        not the middle of a 30k-px strip the user would have to hunt for."""
+        h = self._scene._img_h
+        if h <= 0:
+            return
+        vp = self._view.viewport()
+        y = self._view.mapToScene(vp.rect().center()).y()
+        if not (0 < y < h):
+            y = h / 2
+        y = self._scene.snap_y(y)
+        existing = {int(l.scene_y()) for l in self._scene._lines}
+        while int(y) in existing:
+            y += 20
+        self._scene._add_line(y)
+
+    def _auto_cuts(self):
+        """Place N−1 cuts at quiet rows near equal spacing (replaces current
+        cuts). Falls back to exact equal spacing when no profile exists."""
+        h = self._scene._img_h
+        if h <= 0:
+            return
+        n = self._auto_spin.value()
+        cost = self._scene._row_cost
+        self._scene.clear_lines()
+        for i in range(1, n):
+            target = h * i / n
+            if cost is not None and len(cost) > 0:
+                r = max(4.0, h / (2 * n) * 0.9)
+                lo = int(max(1, target - r))
+                hi = int(min(h - 1, target + r))
+                if hi > lo:
+                    seg = cost[lo:hi].astype(np.float64)
+                    spread = float(seg.max() - seg.min()) or 1.0
+                    dist = np.abs(np.arange(lo, hi) - target) / max(1, hi - lo)
+                    target = lo + int(np.argmin(seg + 0.6 * spread * dist))
+            self._scene._add_line(float(target))
+
     def _on_cuts_changed(self):
-        n = len(self._scene.cut_ys())
-        parts = n + 1
+        ys = self._scene.cut_ys()
+        parts = len(ys) + 1
         self._split_btn.setText(f"Split into {parts} part{'s' if parts != 1 else ''}")
+        # live part-height readout in full-resolution pixels
+        if ys and self._img_h > 0:
+            scale = self._display_scale or 1.0
+            bounds = [0] + [round(y / scale) for y in ys] + [self._img_h]
+            heights = [b - a for a, b in zip(bounds, bounds[1:]) if b > a]
+            self._parts_lab.setText(
+                "Part heights: " + "  ·  ".join(f"{h:,} px" for h in heights))
+        else:
+            self._parts_lab.setText("")
 
     # -- splitting ---------------------------------------------------------
     def _split(self):
@@ -589,15 +895,20 @@ class ManualSplitWidget(QWidget):
         same_cuts = self._same_cuts_chk.isChecked() if self._folder_images else False
         current_cuts = self._cuts_by_path.get(self._image_path, [])
 
-        total_saved = 0
-        for img_path in targets:
-            # same-cuts: the cuts on screen apply to every image; otherwise
-            # each image uses the cuts that were placed on it.
-            cuts = current_cuts if same_cuts else self._cuts_by_path.get(img_path, [])
-            saved = self._split_one(img_path, cuts, out_dir,
-                                    prefix=os.path.splitext(os.path.basename(img_path))[0] if len(targets) > 1 else "")
-            total_saved += saved
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            total_saved = 0
+            for img_path in targets:
+                # same-cuts: the cuts on screen apply to every image; otherwise
+                # each image uses the cuts that were placed on it.
+                cuts = current_cuts if same_cuts else self._cuts_by_path.get(img_path, [])
+                saved = self._split_one(img_path, cuts, out_dir,
+                                        prefix=os.path.splitext(os.path.basename(img_path))[0] if len(targets) > 1 else "")
+                total_saved += saved
+        finally:
+            QApplication.restoreOverrideCursor()
 
+        self._settings.setValue("manual_split/out_dir", out_dir)
         self._status.setText(f"✓ {total_saved} image(s) saved to {out_dir}")
         self._status.setStyleSheet("font-size:12px;color:#1a9e4b;")
         _open_folder(out_dir)
