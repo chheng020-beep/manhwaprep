@@ -11,6 +11,7 @@ from PySide6.QtCore import (
     QPointF,
     QRectF,
     Qt,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import (
@@ -18,10 +19,21 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
+    QImage,
     QPainter,
     QPen,
     QPixmap,
+    QTransform,
 )
+
+# Stitched chapter strips can exceed PIL's decompression-bomb threshold
+# (~178 MP); these are local, user-chosen files.
+Image.MAX_IMAGE_PIXELS = None
+
+# Qt cannot create pixmaps taller/wider than 32767 px — long webtoon strips
+# exceed that, so anything bigger is displayed downscaled and cut positions
+# are mapped back to full resolution when splitting.
+_MAX_DISPLAY_PX = 30000
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -128,6 +140,7 @@ class CutLineItem(QGraphicsItem):
 
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
+        self._scene_ref._renumber()  # keep labels ordered while dragging past others
         self._scene_ref.cuts_changed.emit()
 
     def itemChange(self, change, value):
@@ -150,6 +163,7 @@ class ManualSplitScene(QGraphicsScene):
         self._lines: list[CutLineItem] = []
         self._img_w = 0.0
         self._img_h = 0.0
+        self._press_pos = None  # scene pos of a press on empty space / the image
 
     def reset(self, w: float, h: float):
         """Clear all items AND the tracked line list, then set new image size."""
@@ -163,16 +177,27 @@ class ManualSplitScene(QGraphicsScene):
         self._img_h = h
 
     def mousePressEvent(self, e):
-        # only add line on left-click on empty space
+        # Remember presses on empty space / the image; the line is added on
+        # release only if the mouse didn't move (a real click, not a drag).
+        self._press_pos = None
         if e.button() == Qt.LeftButton:
-            hit = self.itemAt(e.scenePos(), self.views()[0].transform() if self.views() else __import__("PySide6.QtGui", fromlist=["QTransform"]).QTransform())
+            tr = self.views()[0].transform() if self.views() else QTransform()
+            hit = self.itemAt(e.scenePos(), tr)
             if hit is None or isinstance(hit, QGraphicsPixmapItem):
+                self._press_pos = e.scenePos()
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self._press_pos is not None:
+            d = e.scenePos() - self._press_pos
+            self._press_pos = None
+            if abs(d.x()) < 4 and abs(d.y()) < 4:
                 y = e.scenePos().y()
                 if 0 < y < self._img_h:
                     self._add_line(y)
                     e.accept()
                     return
-        super().mousePressEvent(e)
+        super().mouseReleaseEvent(e)
 
     def _add_line(self, y: float):
         y = max(1.0, min(self._img_h - 1, y))
@@ -226,13 +251,15 @@ class ManualSplitView(QGraphicsView):
         self._space_held = False
 
     def wheelEvent(self, e):
-        # Scroll = zoom (reads actual transform so fitInView baseline is respected)
-        delta = e.angleDelta().y()
-        if delta != 0:
-            factor = 1.15 if delta > 0 else 1 / 1.15
-            current = self.transform().m11()  # actual current scale
-            new_scale = max(0.05, min(8.0, current * factor))
-            self.scale(new_scale / current, new_scale / current)
+        # Plain wheel scrolls (tall strips need it); Ctrl/Cmd+wheel zooms —
+        # same convention as the typeset editor.
+        if e.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            delta = e.angleDelta().y()
+            if delta != 0:
+                factor = 1.15 if delta > 0 else 1 / 1.15
+                current = self.transform().m11()  # actual current scale
+                new_scale = max(0.05, min(8.0, current * factor))
+                self.scale(new_scale / current, new_scale / current)
             e.accept()
         else:
             super().wheelEvent(e)
@@ -315,8 +342,10 @@ class ManualSplitWidget(QWidget):
         super().__init__(parent)
         self._image_path: str | None = None
         self._folder_images: list[str] = []
-        self._img_w = 0
+        self._img_w = 0            # full-resolution image size
         self._img_h = 0
+        self._display_scale = 1.0  # display px = image px * scale (≤ 1.0)
+        self._cuts_by_path: dict[str, list[int]] = {}  # full-res cut ys per image
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -327,9 +356,9 @@ class ManualSplitWidget(QWidget):
         root.addWidget(self._drop)
 
         browse_row = QHBoxLayout()
-        browse_img = QPushButton("🖼 Open image…")
+        browse_img = QPushButton("Open image…")
         browse_img.clicked.connect(self._browse_image)
-        browse_folder = QPushButton("📁 Open folder…")
+        browse_folder = QPushButton("Open folder…")
         browse_folder.clicked.connect(self._browse_folder)
         browse_row.addWidget(browse_img)
         browse_row.addWidget(browse_folder)
@@ -368,10 +397,10 @@ class ManualSplitWidget(QWidget):
 
         # controls row
         ctrl = QHBoxLayout()
-        self._add_btn = QPushButton("＋ Add cut line")
+        self._add_btn = QPushButton("+ Add cut line")
         self._add_btn.clicked.connect(self._scene.add_line_at_center)
         self._add_btn.setEnabled(False)
-        self._clear_btn = QPushButton("✕ Clear all")
+        self._clear_btn = QPushButton("Clear all")
         self._clear_btn.clicked.connect(self._scene.clear_lines)
         self._clear_btn.setEnabled(False)
         ctrl.addWidget(self._add_btn)
@@ -392,7 +421,7 @@ class ManualSplitWidget(QWidget):
         root.addLayout(out_row)
 
         # split button
-        self._split_btn = QPushButton("✂️  Split")
+        self._split_btn = QPushButton("Split")
         self._split_btn.setFixedHeight(40)
         self._split_btn.setEnabled(False)
         self._split_btn.setStyleSheet(
@@ -463,27 +492,54 @@ class ManualSplitWidget(QWidget):
             return
         self._load_pixmap(self._folder_images[idx])
 
-    def _load_pixmap(self, path: str):
-        self._image_path = path
-        pm = QPixmap(path)
-        if pm.isNull():
-            self._status.setText(f"Could not load: {path}")
-            return
+    def _store_current_cuts(self):
+        """Remember the current image's cuts (full-resolution coords) so they
+        survive switching images in folder mode."""
+        if self._image_path and self._display_scale > 0:
+            self._cuts_by_path[self._image_path] = [
+                round(y / self._display_scale) for y in self._scene.cut_ys()]
 
-        self._img_w = pm.width()
-        self._img_h = pm.height()
+    def _load_pixmap(self, path: str):
+        self._store_current_cuts()  # keep the cuts of the image we're leaving
+
+        # Load with PIL: Qt refuses images taller than 32767 px, which long
+        # stitched strips routinely exceed. Oversized images are displayed
+        # downscaled; cuts are mapped back to full resolution when splitting.
+        try:
+            img = Image.open(path)
+            img.load()
+        except Exception as e:
+            self._status.setText(f"Could not load: {path} ({e})")
+            return
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        self._image_path = path
+        self._img_w, self._img_h = img.size
+        scale = min(1.0, _MAX_DISPLAY_PX / max(1, self._img_h),
+                    _MAX_DISPLAY_PX / max(1, self._img_w))
+        self._display_scale = scale
+        if scale < 1.0:
+            img = img.resize((max(1, int(self._img_w * scale)),
+                              max(1, int(self._img_h * scale))), Image.LANCZOS)
+        disp_w, disp_h = img.size
+        qimg = QImage(img.tobytes("raw", "RGB"), disp_w, disp_h,
+                      3 * disp_w, QImage.Format_RGB888).copy()
+        pm = QPixmap.fromImage(qimg)
 
         # reset() clears _lines list AND calls QGraphicsScene.clear() together
         # so no stale C++ item references remain
-        self._scene.reset(float(self._img_w), float(self._img_h))
+        self._scene.reset(float(disp_w), float(disp_h))
 
         pix_item = QGraphicsPixmapItem(pm)
         pix_item.setZValue(0)
         self._scene.addItem(pix_item)
-        self._scene.setSceneRect(0, 0, self._img_w, self._img_h)
+        self._scene.setSceneRect(0, 0, disp_w, disp_h)
 
-        self._view.resetTransform()  # clear any previous zoom before fitInView
-        self._view.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        # restore this image's remembered cuts (full-res → display coords)
+        for y in self._cuts_by_path.get(path, []):
+            self._scene._add_line(y * scale)
+
         self._view.setVisible(True)
         self._view.setFocus()
         self._hint.setVisible(True)
@@ -492,12 +548,29 @@ class ManualSplitWidget(QWidget):
         self._clear_btn.setEnabled(True)
         self._split_btn.setEnabled(True)
         self._on_cuts_changed()
+        # Fit AFTER the layout pass — fitting while the view is still hidden /
+        # unsized produced a broken initial zoom. Tall strips fit to width and
+        # start at the top (fitting the whole strip makes it a useless sliver).
+        QTimer.singleShot(0, self._fit_initial)
+
+    def _fit_initial(self):
+        sr = self._scene.sceneRect()
+        vp = self._view.viewport()
+        if sr.width() <= 0 or vp.width() <= 2:
+            return
+        self._view.resetTransform()
+        if sr.height() > sr.width() * 3:  # tall strip → fit width, top
+            f = vp.width() / sr.width()
+            self._view.scale(f, f)
+            self._view.verticalScrollBar().setValue(0)
+        else:
+            self._view.fitInView(sr, Qt.KeepAspectRatio)
 
     # -- cuts --------------------------------------------------------------
     def _on_cuts_changed(self):
         n = len(self._scene.cut_ys())
         parts = n + 1
-        self._split_btn.setText(f"✂️  Split into {parts} part{'s' if parts != 1 else ''}")
+        self._split_btn.setText(f"Split into {parts} part{'s' if parts != 1 else ''}")
 
     # -- splitting ---------------------------------------------------------
     def _split(self):
@@ -511,13 +584,16 @@ class ManualSplitWidget(QWidget):
             out_dir = os.path.expanduser("~/Desktop/ManhwaPrep/splits")
         os.makedirs(out_dir, exist_ok=True)
 
+        self._store_current_cuts()  # cuts on screen → full-res, keyed by path
         targets = self._folder_images if self._folder_images else [path]
         same_cuts = self._same_cuts_chk.isChecked() if self._folder_images else False
-        shared_cuts = self._scene.cut_ys() if same_cuts else None
+        current_cuts = self._cuts_by_path.get(self._image_path, [])
 
         total_saved = 0
         for img_path in targets:
-            cuts = shared_cuts if (same_cuts and shared_cuts is not None) else self._scene.cut_ys()
+            # same-cuts: the cuts on screen apply to every image; otherwise
+            # each image uses the cuts that were placed on it.
+            cuts = current_cuts if same_cuts else self._cuts_by_path.get(img_path, [])
             saved = self._split_one(img_path, cuts, out_dir,
                                     prefix=os.path.splitext(os.path.basename(img_path))[0] if len(targets) > 1 else "")
             total_saved += saved

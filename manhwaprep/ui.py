@@ -210,9 +210,9 @@ class MainWindow(QWidget):
         self._projects_tab = self._build_projects_tab()
         self._clean_tab = self._build_clean_tab()
         self._split_tab = ManualSplitWidget()
-        self.tabs.addTab(self._projects_tab, "🗂 Projects")
-        self.tabs.addTab(self._clean_tab, "🧹 Clean & Prepare")
-        self.tabs.addTab(self._split_tab, "✂️ Manual Split")
+        self.tabs.addTab(self._projects_tab, "Projects")
+        self.tabs.addTab(self._clean_tab, "Clean & Prepare")
+        self.tabs.addTab(self._split_tab, "Manual Split")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self.tabs)
 
