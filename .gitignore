@@ -24,3 +24,4 @@ bot.log
 # local user data
 recent_projects.json
 .cache/
+crash.log

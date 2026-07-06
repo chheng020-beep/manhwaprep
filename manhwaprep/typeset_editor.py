@@ -2923,6 +2923,17 @@ class TypesetEditor(QWidget):
             return
         self._project_name = name.strip() or default
         self._commit_items()
+        # the chapter folder can vanish mid-session (moved/renamed/deleted);
+        # recreate it so saving never crashes, and fail with a message if we
+        # can't (e.g. an unplugged external drive)
+        try:
+            os.makedirs(self.base, exist_ok=True)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Save failed",
+                f"Cannot save — the project folder is unreachable:\n"
+                f"{self.base}\n\n{e}")
+            return
         segs = []
         for s in self.segments:
             entry = {"image": s["image"], "state": s.get("_state", [])}
@@ -2940,8 +2951,14 @@ class TypesetEditor(QWidget):
             "segments": segs,
         }
         path = os.path.join(self.base, "typeset_project.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(proj, f, ensure_ascii=False, indent=2)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(proj, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Save failed",
+                f"Could not write the project file:\n{path}\n\n{e}")
+            return
         self._register_recent()  # bump it to the top of the home screen
         QMessageBox.information(
             self, "Saved",
