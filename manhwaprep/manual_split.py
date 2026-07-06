@@ -547,6 +547,7 @@ class ManualSplitWidget(QWidget):
         self._img_h = 0
         self._display_scale = 1.0  # display px = image px * scale (≤ 1.0)
         self._cuts_by_path: dict[str, list[int]] = {}  # full-res cut ys per image
+        self._shared_cuts: list[int] = []  # cuts shown on every image in same-cuts mode
         self._settings = QSettings("ManhwaPrep", "ManhwaPrep")
 
         root = QVBoxLayout(self)
@@ -578,6 +579,7 @@ class ManualSplitWidget(QWidget):
         fb_lay.addWidget(self._img_combo)
         self._same_cuts_chk = QCheckBox("Same cuts for all images")
         self._same_cuts_chk.setChecked(True)
+        self._same_cuts_chk.toggled.connect(self._on_same_cuts_toggled)
         fb_lay.addWidget(self._same_cuts_chk)
         self._folder_bar.setVisible(False)
         root.addWidget(self._folder_bar)
@@ -695,7 +697,9 @@ class ManualSplitWidget(QWidget):
             self._settings.setValue("manual_split/out_dir", p)
 
     def load_image(self, path: str):
-        self._image_path = path
+        # NOTE: _image_path must NOT be set here — _store_current_cuts (inside
+        # _load_pixmap) still needs the OLD path so the old image's cuts are
+        # saved under the right key. _load_pixmap_inner sets the new path.
         self._folder_images = []
         self._folder_bar.setVisible(False)
         self._load_pixmap(path)
@@ -709,7 +713,9 @@ class ManualSplitWidget(QWidget):
         if not imgs:
             self._status.setText("No images found in folder.")
             return
+        self._store_current_cuts()   # save the previous image under its own path
         self._folder_images = imgs
+        self._shared_cuts = []       # fresh folder starts with no shared cuts
         self._img_combo.blockSignals(True)
         self._img_combo.clear()
         for p in imgs:
@@ -727,8 +733,26 @@ class ManualSplitWidget(QWidget):
         """Remember the current image's cuts (full-resolution coords) so they
         survive switching images in folder mode."""
         if self._image_path and self._display_scale > 0:
-            self._cuts_by_path[self._image_path] = [
-                round(y / self._display_scale) for y in self._scene.cut_ys()]
+            cuts = [round(y / self._display_scale) for y in self._scene.cut_ys()]
+            # same-cuts mode: the on-screen cuts ARE the shared set and follow
+            # the user to whichever image is shown next; per-image sets stay
+            # untouched so unchecking brings each image's own cuts back
+            if self._folder_images and self._same_cuts_chk.isChecked():
+                self._shared_cuts = list(cuts)
+            else:
+                self._cuts_by_path[self._image_path] = cuts
+
+    def _on_same_cuts_toggled(self, on: bool):
+        if not self._folder_images:
+            return
+        if on:
+            self._store_current_cuts()  # adopt the current cuts as the shared set
+        else:
+            # back to per-image mode: show this image's own cuts again
+            scale = self._display_scale or 1.0
+            self._scene.clear_lines()
+            for y in self._cuts_by_path.get(self._image_path, []):
+                self._scene._add_line(y * scale)
 
     def _load_pixmap(self, path: str):
         self._store_current_cuts()  # keep the cuts of the image we're leaving
@@ -776,9 +800,15 @@ class ManualSplitWidget(QWidget):
         self._scene.addItem(pix_item)
         self._scene.setSceneRect(0, 0, disp_w, disp_h)
 
-        # restore this image's remembered cuts (full-res → display coords)
-        for y in self._cuts_by_path.get(path, []):
-            self._scene._add_line(y * scale)
+        # restore cuts (full-res → display coords): in same-cuts folder mode
+        # the shared set follows the user to every image; otherwise each image
+        # shows the cuts that were placed on it
+        if self._folder_images and self._same_cuts_chk.isChecked():
+            cuts = self._shared_cuts
+        else:
+            cuts = self._cuts_by_path.get(path, [])
+        for y in cuts:
+            self._scene._add_line(y * scale)  # _add_line clamps into bounds
 
         self._view.setVisible(True)
         self._view.setFocus()
@@ -890,10 +920,11 @@ class ManualSplitWidget(QWidget):
             out_dir = os.path.expanduser("~/Desktop/ManhwaPrep/splits")
         os.makedirs(out_dir, exist_ok=True)
 
-        self._store_current_cuts()  # cuts on screen → full-res, keyed by path
+        self._store_current_cuts()  # cuts on screen → full-res (shared or per-path)
         targets = self._folder_images if self._folder_images else [path]
         same_cuts = self._same_cuts_chk.isChecked() if self._folder_images else False
-        current_cuts = self._cuts_by_path.get(self._image_path, [])
+        current_cuts = self._shared_cuts if same_cuts else \
+            self._cuts_by_path.get(self._image_path, [])
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
