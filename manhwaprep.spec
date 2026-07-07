@@ -26,6 +26,7 @@ a = Analysis(
     binaries=binaries,
     datas=[
         ("manhwaprep/assets/icon.png", "manhwaprep/assets"),
+        ("manhwaprep/assets/logo.png", "manhwaprep/assets"),
         ("manhwaprep/assets/fonts", "manhwaprep/assets/fonts"),
         ("manhwaprep/ocr_models", "manhwaprep/ocr_models"),
     ] + datas,

@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QButtonGroup,
+    QCheckBox,
     QFontComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -1679,6 +1680,12 @@ class TypesetEditor(QWidget):
         self.pdf_btn.setToolTip("Combine every canvas into a single PDF")
         self.pdf_btn.clicked.connect(self._export_pdf)
         eg.addWidget(self.pdf_btn)
+        self.wm_chk = QCheckBox("Logo watermark")
+        self.wm_chk.setChecked(True)
+        self.wm_chk.setToolTip(
+            "Stamp the circular logo in the bottom-right corner of every "
+            "exported page, PDF page and FB panel.")
+        eg.addWidget(self.wm_chk)
         srow = QHBoxLayout()
         srow.addWidget(QLabel("FB split"))
         self.split_mode = QComboBox()
@@ -2744,10 +2751,24 @@ class TypesetEditor(QWidget):
         p.end()
         return img
 
+    def _watermark_on(self) -> bool:
+        return getattr(self, "wm_chk", None) is not None and self.wm_chk.isChecked()
+
+    def _save_render(self, seg, out: str, watermarked: bool):
+        """Render a canvas to disk, optionally stamping the corner logo."""
+        img = self._render(seg)
+        if watermarked:
+            from PIL import Image as PILImage
+            from . import watermark
+            rgb = np.ascontiguousarray(self._qimage_to_bgr(img)[:, :, ::-1])
+            watermark.stamp(PILImage.fromarray(rgb)).save(out)
+        else:
+            img.save(out)
+
     def _export(self):
         seg = self.segments[self.seg_idx]
         out = os.path.join(self.base, seg["image"].replace(".png", "_kh.png"))
-        self._render(seg).save(out)
+        self._save_render(seg, out, self._watermark_on())
         QMessageBox.information(self, "Exported", out)
 
     @staticmethod
@@ -2774,7 +2795,8 @@ class TypesetEditor(QWidget):
             sub = self.base if translated else clean_dir
             os.makedirs(sub, exist_ok=True)
             out = os.path.join(sub, seg["image"].replace(".png", "_kh.png"))
-            self._render(seg).save(out)
+            # clean_untranslated pages are work-in-progress — never stamp those
+            self._save_render(seg, out, self._watermark_on() and translated)
             (done if translated else pending).append(out)
         self.seg_idx = cur
         self._load_segment(cur)
@@ -2808,7 +2830,11 @@ class TypesetEditor(QWidget):
                 skipped += 1
                 continue
             bgr = self._qimage_to_bgr(self._render(seg))
-            pages.append(Image.fromarray(np.ascontiguousarray(bgr[:, :, ::-1])))
+            page = Image.fromarray(np.ascontiguousarray(bgr[:, :, ::-1]))
+            if self._watermark_on():
+                from . import watermark
+                page = watermark.stamp(page)
+            pages.append(page)
         self.seg_idx = cur
         self._load_segment(cur)
         if not pages:
@@ -2890,6 +2916,9 @@ class TypesetEditor(QWidget):
         if not paths:
             QMessageBox.warning(self, "No panels", "Nothing to split.")
             return
+        if self._watermark_on():
+            from . import watermark
+            watermark.stamp_files(paths)
         QMessageBox.information(
             self, "Facebook panels",
             f"{len(paths)} panel(s) →\n{out_dir}",
@@ -2907,6 +2936,9 @@ class TypesetEditor(QWidget):
             self._load_segment(i)
             bgr, slices = self._slice_canvas(seg)
             wrote = splitter.write_panels(bgr, slices, out_dir, "panel", idx)
+            if wrote and self._watermark_on():
+                from . import watermark
+                watermark.stamp_files(wrote)
             idx += len(wrote)
             total += len(wrote)
         QMessageBox.information(
