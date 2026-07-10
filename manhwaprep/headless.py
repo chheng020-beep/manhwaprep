@@ -20,6 +20,17 @@ UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+
+# comix.to (and similar) now block obvious headless browsers — the reader
+# refuses to render and the page stays blank. These launch args + init script
+# mask the automation fingerprint so the reader runs normally.
+_LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = {runtime: {}};
+"""
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 THUMB_RE = re.compile(r"-\d+x\d+\.(?:jpg|jpeg|png|webp|gif)$", re.IGNORECASE)
 SKIP_HINTS = ("/covers/", "/cover/", "avatar", "logo", "favicon", "icon", "banner")
@@ -108,16 +119,23 @@ def _collect_comix(url: str, timeout_ms: int = 60000) -> list[str]:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(user_agent=UA, viewport={"width": 800, "height": 900})
+        browser = p.chromium.launch(headless=True, args=_LAUNCH_ARGS)
+        ctx = browser.new_context(user_agent=UA, viewport={"width": 1200, "height": 1000})
         page = ctx.new_page()
+        page.add_init_script(_STEALTH_JS)
         page.add_init_script(_COMIX_HOOK)
         try:
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         except Exception:
             pass
-        page.wait_for_timeout(4000)
-        captured = page.evaluate("window.__comix_pages")
+        # the reader decrypts and builds the page-list array shortly after load;
+        # the map hook captures it. give it a moment, then retry if it's slow.
+        captured = None
+        for _ in range(8):
+            page.wait_for_timeout(1500)
+            captured = page.evaluate("window.__comix_pages")
+            if captured:
+                break
         browser.close()
 
     # Pick the largest captured array (the chapter page list, not UI arrays)
@@ -285,13 +303,14 @@ def _render_comix(url: str, timeout_ms: int = 180000) -> list[bytes]:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=_LAUNCH_ARGS)
         ctx = browser.new_context(user_agent=UA, viewport={"width": 940, "height": 1080})
         pg = ctx.new_page()
+        pg.add_init_script(_STEALTH_JS)
         pg.add_init_script(_COMIX_HOOK)
 
         try:
-            pg.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            pg.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         except Exception:
             pass
         pg.wait_for_timeout(5000)
@@ -346,8 +365,16 @@ def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
 
     host = urlparse(chapter_url).netloc.lower()
     if "comix.to" in host or "comick.io" in host or "comick.fun" in host:
-        # Render-based path: screenshot each page after the JS unscrambles it.
-        # Downloading raw URLs gives scrambled pixels (comix.to DRM).
+        # comix.to no longer scrambles pages (no more canvas DRM) — the reader
+        # loads plain image URLs, which the map hook captures in full. Download
+        # them directly: far faster and lossless vs. screenshotting each page.
+        urls = _collect_comix(chapter_url, timeout_ms=90000)
+        if len(urls) >= 3:
+            paths = _download_urls(urls, dest_dir, referer="https://comix.to/")
+            if paths:
+                return paths
+        # Fallback for any title that still uses canvas tile-scrambling:
+        # screenshot each page after the JS reader renders it.
         shots = _render_comix(chapter_url)
         if shots:
             paths = []
@@ -361,17 +388,32 @@ def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
     urls = _collect(chapter_url)
     if not urls:
         raise RuntimeError("headless browser found no chapter images on the page.")
+    return _download_urls(urls, dest_dir, referer=chapter_url)
 
+
+# content-type → extension, so extension-less CDN URLs (comix.to's image host
+# returns webp with no path suffix) are still saved with a correct extension.
+_CT_EXT = {"image/webp": ".webp", "image/jpeg": ".jpg", "image/png": ".png",
+           "image/gif": ".gif"}
+
+
+def _download_urls(urls: list[str], dest_dir: str, referer: str) -> list[str]:
+    """Download image URLs to dest_dir as 001.ext, 002.ext … in order."""
+    os.makedirs(dest_dir, exist_ok=True)
     session = requests.Session()
-    headers = {"User-Agent": UA, "Referer": chapter_url}
+    headers = {"User-Agent": UA, "Referer": referer}
     paths = []
     for i, u in enumerate(urls):
+        try:
+            resp = session.get(u, headers=headers, timeout=60)
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"[headless] page {i + 1} failed: {e}")
+            continue
         ext = os.path.splitext(urlparse(u).path)[1].lower()
         if ext not in IMG_EXTS:
-            ext = ".jpg"
+            ext = _CT_EXT.get(resp.headers.get("content-type", "").split(";")[0], ".jpg")
         out = os.path.join(dest_dir, f"{i + 1:03d}{ext}")
-        resp = session.get(u, headers=headers, timeout=60)
-        resp.raise_for_status()
         with open(out, "wb") as f:
             f.write(resp.content)
         paths.append(out)
