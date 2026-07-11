@@ -32,10 +32,13 @@ from PySide6.QtWidgets import (
 )
 
 from .batch import batch_download, detect_chapter
+from .config import default_output_dir
 from .control import Control, PipelineStopped
 from .engine import TextCleaner
 from .manual_split import ManualSplitWidget
 from .pipeline import run, run_for_batch
+from .studio import Studio
+from .studio_tab import StudioTab
 
 
 def _ocr_available() -> bool:
@@ -213,6 +216,10 @@ class MainWindow(QWidget):
         self.tabs.addTab(self._projects_tab, "Projects")
         self.tabs.addTab(self._clean_tab, "Clean & Prepare")
         self.tabs.addTab(self._split_tab, "Manual Split")
+        studio_root = os.path.join(default_output_dir(), "studio")
+        self._studio = Studio(studio_root)
+        self._studio_tab = StudioTab(self._studio)
+        self.tabs.addTab(self._studio_tab, "Studio")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self.tabs)
 

@@ -85,3 +85,10 @@ def test_tab_cut_gate_opens_splitter_and_advance_on_export():
         # simulate splitter finishing an export
         tab._on_split_export(j.slug)
         assert studio.ChapterJob.from_status(cdir).state == studio.DONE
+
+
+def test_mainwindow_has_studio_tab():
+    from manhwaprep.ui import MainWindow
+    w = MainWindow()
+    titles = [w.tabs.tabText(i) for i in range(w.tabs.count())]
+    assert "Studio" in titles
