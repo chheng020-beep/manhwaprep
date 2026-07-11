@@ -1711,6 +1711,10 @@ class TypesetEditor(QWidget):
         save = QPushButton("Save project")
         save.clicked.connect(self._save)
         eg.addWidget(save)
+        self.ready_btn = QPushButton("✅ Ready to cut")
+        self.ready_btn.setToolTip("Save and hand this chapter to the panel-cutting gate")
+        self.ready_btn.clicked.connect(self._on_ready_to_cut)
+        eg.addWidget(self.ready_btn)
         col.addWidget(exp)
 
         col.addStretch(1)
@@ -2804,6 +2808,25 @@ class TypesetEditor(QWidget):
         if pending:
             msg += (f"\n{len(pending)} not-yet-translated → {clean_dir}")
         QMessageBox.information(self, "Exported all", msg)
+
+    def render_translated(self, out_dir: str, watermarked: bool = False) -> list:
+        """Render each segment's canvas with Khmer boxes burned in to
+        <out_dir>/rendered_NNN.png; return the paths in order."""
+        os.makedirs(out_dir, exist_ok=True)
+        paths = []
+        for i, seg in enumerate(self.segments, 1):
+            out = os.path.join(out_dir, f"rendered_{i:03d}.png")
+            self._save_render(seg, out, watermarked)
+            paths.append(out)
+        return paths
+
+    def set_ready_callback(self, fn):
+        self._ready_cb = fn
+
+    def _on_ready_to_cut(self):
+        self._save()
+        if getattr(self, "_ready_cb", None):
+            self._ready_cb()
 
     def _export_pdf(self):
         """Render every canvas (Khmer + edits baked in) into one multi-page PDF."""
