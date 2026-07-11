@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
     QTableWidget, QTableWidgetItem,
 )
 
@@ -51,6 +51,7 @@ class StudioTab(QWidget):
         self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Chapter", "State", "Action"])
         lay.addWidget(self._table)
+        self._studio.recover()  # re-queue any prep interrupted by a crash
         self.refresh()
 
     # --- queue / worker ---
@@ -116,7 +117,7 @@ class StudioTab(QWidget):
         layout = os.path.join(cdir, "typeset", "layout.json")
         rendered = os.path.join(cdir, "rendered")
         # render the lettered canvases so the splitter cuts the translated art
-        ed = self._editor_cls(layout)
+        ed = self._editor_cls(layout, resume=True)
         ed.render_translated(rendered, watermarked=False)
         sp = self._split_cls()
         sp.set_export_dir(os.path.join(cdir, "output"))
@@ -126,10 +127,25 @@ class StudioTab(QWidget):
         sp.show()
 
     def _on_split_export(self, slug: str):
-        job = studio_mod.ChapterJob.from_status(self._studio.chapter_dir(slug))
+        cdir = self._studio.chapter_dir(slug)
+        job = studio_mod.ChapterJob.from_status(cdir)
         if job.state == studio_mod.CUT:
+            out = os.path.join(cdir, "output")
+            if os.path.isdir(out):
+                from . import watermark
+                files = [os.path.join(out, f) for f in sorted(os.listdir(out))
+                         if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+                if files:
+                    watermark.stamp_files(files)
             self._studio.advance(slug)
             self.refresh()
+
+    def closeEvent(self, event):
+        t = self._thread
+        if t and t.isRunning():
+            t.control.request_stop()
+            t.wait(5000)
+        super().closeEvent(event)
 
     def _open_output(self, slug: str):
         path = os.path.join(self._studio.chapter_dir(slug), "output")

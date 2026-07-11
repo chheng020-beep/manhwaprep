@@ -1285,9 +1285,10 @@ class _EffectsPanel(QWidget):
 
 
 class TypesetEditor(QWidget):
-    def __init__(self, layout_path: str):
+    def __init__(self, layout_path: str, resume=None):
         super().__init__()
         self.layout_path = layout_path
+        self._resume = resume  # None=ask via modal, True=silent restore, False=skip
         self.base = os.path.dirname(layout_path)
         with open(layout_path, encoding="utf-8") as f:
             self.layout = json.load(f)
@@ -2810,22 +2811,29 @@ class TypesetEditor(QWidget):
         QMessageBox.information(self, "Exported all", msg)
 
     def render_translated(self, out_dir: str, watermarked: bool = False) -> list:
-        """Render each segment's canvas with Khmer boxes burned in to
-        <out_dir>/rendered_NNN.png; return the paths in order."""
+        """Render each segment's canvas with its Khmer boxes burned in to
+        <out_dir>/rendered_NNN.png; return the paths in order. Mirrors
+        _export_all: load each segment before rendering so multi-segment
+        chapters produce distinct canvases (not N copies of the current one)."""
         os.makedirs(out_dir, exist_ok=True)
+        self._commit_items()
+        cur = self.seg_idx
         paths = []
-        for i, seg in enumerate(self.segments, 1):
-            out = os.path.join(out_dir, f"rendered_{i:03d}.png")
+        for i, seg in enumerate(self.segments):
+            self.seg_idx = i
+            self._load_segment(i)
+            out = os.path.join(out_dir, f"rendered_{i + 1:03d}.png")
             self._save_render(seg, out, watermarked)
             paths.append(out)
+        self.seg_idx = cur
+        self._load_segment(cur)
         return paths
 
     def set_ready_callback(self, fn):
         self._ready_cb = fn
 
     def _on_ready_to_cut(self):
-        self._save()
-        if getattr(self, "_ready_cb", None):
+        if self._save() and getattr(self, "_ready_cb", None):
             self._ready_cb()
 
     def _export_pdf(self):
@@ -2975,7 +2983,7 @@ class TypesetEditor(QWidget):
         name, ok = QInputDialog.getText(
             self, "Save project", "Project name:", text=default)
         if not ok:
-            return
+            return False
         self._project_name = name.strip() or default
         self._commit_items()
         # the chapter folder can vanish mid-session (moved/renamed/deleted);
@@ -2988,7 +2996,7 @@ class TypesetEditor(QWidget):
                 self, "Save failed",
                 f"Cannot save — the project folder is unreachable:\n"
                 f"{self.base}\n\n{e}")
-            return
+            return False
         segs = []
         for s in self.segments:
             entry = {"image": s["image"], "state": s.get("_state", [])}
@@ -3013,12 +3021,13 @@ class TypesetEditor(QWidget):
             QMessageBox.warning(
                 self, "Save failed",
                 f"Could not write the project file:\n{path}\n\n{e}")
-            return
+            return False
         self._register_recent()  # bump it to the top of the home screen
         QMessageBox.information(
             self, "Saved",
             f"Project saved →\n{path}\n\nReopen it from the app's home screen, or "
             "this chapter's layout.json, to resume where you left off.")
+        return True
 
     def _load_project(self):
         """If a saved project exists for this chapter, offer to resume it —
@@ -3032,11 +3041,15 @@ class TypesetEditor(QWidget):
                 proj = json.load(f)
         except Exception:
             return
-        if QMessageBox.question(
-                self, "Resume project?",
-                "A saved project was found for this chapter.\n"
-                "Resume where you left off?") != QMessageBox.Yes:
+        if self._resume is False:
             return
+        if self._resume is None:
+            if QMessageBox.question(
+                    self, "Resume project?",
+                    "A saved project was found for this chapter.\n"
+                    "Resume where you left off?") != QMessageBox.Yes:
+                return
+        # self._resume is True -> restore silently (no prompt)
         by_image = {s.get("image"): s for s in proj.get("segments", [])}
         for seg in self.segments:
             sp = by_image.get(seg["image"])

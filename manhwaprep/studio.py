@@ -44,8 +44,11 @@ class ChapterJob:
     def to_status(self, dir_path: str) -> None:
         os.makedirs(dir_path, exist_ok=True)
         self.updated_at = datetime.now().isoformat(timespec="seconds")
-        with open(os.path.join(dir_path, STATUS_FILE), "w", encoding="utf-8") as f:
+        final = os.path.join(dir_path, STATUS_FILE)
+        tmp = final + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+        os.replace(tmp, final)
 
     @classmethod
     def from_status(cls, dir_path: str) -> "ChapterJob":
@@ -86,12 +89,24 @@ class Studio:
                 job = ChapterJob.from_status(d)
             except Exception:
                 continue
-            if job.state == PREPPING:      # app died mid-prep -> re-queue
-                job.state = QUEUED
-                job.to_status(d)
             jobs.append(job)
         jobs.sort(key=lambda j: j.updated_at)
         return jobs
+
+    def recover(self) -> None:
+        """One-shot startup recovery: any job left 'prepping' (app died
+        mid-prep) is re-queued. Call once on launch, never from refresh."""
+        for name in os.listdir(self.root):
+            d = self.chapter_dir(name)
+            if not os.path.isfile(os.path.join(d, STATUS_FILE)):
+                continue
+            try:
+                job = ChapterJob.from_status(d)
+            except Exception:
+                continue
+            if job.state == PREPPING:
+                job.state = QUEUED
+                job.to_status(d)
 
     def set_state(self, slug: str, state: str) -> ChapterJob:
         assert state in VALID_STATES, state
@@ -104,6 +119,8 @@ class Studio:
     def advance(self, slug: str) -> ChapterJob:
         d = self.chapter_dir(slug)
         job = ChapterJob.from_status(d)
+        if job.state not in NEXT_STATE:
+            raise ValueError(f"cannot advance from state {job.state!r}")
         job.state = NEXT_STATE[job.state]
         job.error = None
         job.to_status(d)

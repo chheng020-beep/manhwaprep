@@ -21,7 +21,7 @@ def test_job_status_roundtrip():
         assert back.updated_at  # stamped on write
 
 
-def test_add_scan_advance_and_prepping_reset():
+def test_scan_non_mutating_and_recover_requeues_prepping():
     with tempfile.TemporaryDirectory() as root:
         st = studio.Studio(root)
         j = st.add("http://x/ch3", "Broken Ring ch3")
@@ -30,13 +30,26 @@ def test_add_scan_advance_and_prepping_reset():
 
         # simulate a crash mid-prep
         st.set_state(j.slug, studio.PREPPING)
+        # scan() must NOT mutate state (it races the live worker on refresh)
         jobs = st.scan()
         assert len(jobs) == 1
-        assert jobs[0].state == studio.QUEUED  # prepping reset on scan
+        assert jobs[0].state == studio.PREPPING
+        # recover() is the one-shot startup re-queue
+        st.recover()
+        assert st.scan()[0].state == studio.QUEUED
 
         st.set_state(j.slug, studio.PREPPING)
         st.advance(j.slug)
         assert studio.ChapterJob.from_status(st.chapter_dir(j.slug)).state == studio.TYPESET
+
+
+def test_advance_from_non_advanceable_state_raises():
+    import pytest
+    with tempfile.TemporaryDirectory() as root:
+        st = studio.Studio(root)
+        j = st.add("http://x/ch", "ch")   # QUEUED — not in NEXT_STATE
+        with pytest.raises(ValueError):
+            st.advance(j.slug)
 
 
 def test_error_and_retry():

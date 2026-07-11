@@ -92,3 +92,42 @@ def test_mainwindow_has_studio_tab():
     w = MainWindow()
     titles = [w.tabs.tabText(i) for i in range(w.tabs.count())]
     assert "Studio" in titles
+
+
+def test_render_translated_multisegment_distinct():
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ts = os.path.join(d, "typeset"); os.makedirs(ts, exist_ok=True)
+        red = np.zeros((100, 100, 3), np.uint8); red[:] = (0, 0, 255)    # BGR red
+        blue = np.zeros((100, 100, 3), np.uint8); blue[:] = (255, 0, 0)  # BGR blue
+        cv2.imwrite(os.path.join(ts, "canvas_001.png"), red)
+        cv2.imwrite(os.path.join(ts, "canvas_002.png"), blue)
+        layout = {"chapter": "t", "lang": "en", "segments": [
+            {"image": "canvas_001.png", "width": 100, "height": 100, "items": []},
+            {"image": "canvas_002.png", "width": 100, "height": 100, "items": []}]}
+        p = os.path.join(ts, "layout.json")
+        json.dump(layout, open(p, "w", encoding="utf-8"))
+        ed = TypesetEditor(p)
+        out = os.path.join(d, "rendered")
+        paths = ed.render_translated(out)
+        assert len(paths) == 2
+        a = cv2.imread(paths[0]); b = cv2.imread(paths[1])
+        # each segment must render its OWN canvas, not a copy of the first:
+        assert a[..., 2].mean() > a[..., 0].mean()   # canvas 1 stays red-dominant
+        assert b[..., 0].mean() > b[..., 2].mean()   # canvas 2 is blue-dominant
+
+
+def test_resume_flag_controls_silent_restore():
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        p = _make_layout(d)
+        base = os.path.dirname(p)
+        proj = {"layout": "layout.json", "name": "KHMER-DONE",
+                "seg_idx": 0, "post_groups": [], "segments": []}
+        json.dump(proj, open(os.path.join(base, "typeset_project.json"), "w"))
+        # QMessageBox.question is stubbed to return None at top of file, so the
+        # default (ask) path would NOT restore; resume=True must restore anyway.
+        ed_yes = TypesetEditor(p, resume=True)
+        assert ed_yes._project_name == "KHMER-DONE"
+        ed_no = TypesetEditor(p, resume=False)
+        assert ed_no._project_name is None
