@@ -943,6 +943,8 @@ class ManualSplitWidget(QWidget):
         self._status.setText(f"✓ {total_saved} image(s) saved to {out_dir}")
         self._status.setStyleSheet("font-size:12px;color:#1a9e4b;")
         _open_folder(out_dir)
+        if getattr(self, "_export_cb", None):
+            self._export_cb()
 
     def _split_one(self, img_path: str, cuts: list[int], out_dir: str, prefix: str = "") -> int:
         try:
@@ -967,6 +969,12 @@ class ManualSplitWidget(QWidget):
             saved += 1
 
         return saved
+
+    def set_export_dir(self, path: str):
+        self._out_edit.setText(path)
+
+    def set_export_callback(self, fn):
+        self._export_cb = fn
 
 
 def _open_folder(path: str):
