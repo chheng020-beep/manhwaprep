@@ -52,3 +52,74 @@ class ChapterJob:
             data = json.load(f)
         return cls(**{k: data.get(k) for k in
                       ("title", "source", "slug", "state", "error", "updated_at")})
+
+
+class Studio:
+    def __init__(self, root: str):
+        self.root = root
+        os.makedirs(root, exist_ok=True)
+
+    def chapter_dir(self, slug: str) -> str:
+        return os.path.join(self.root, slug)
+
+    def _unique_slug(self, base: str) -> str:
+        slug, i = base, 2
+        while os.path.exists(self.chapter_dir(slug)):
+            slug = f"{base}-{i}"
+            i += 1
+        return slug
+
+    def add(self, source: str, title: str) -> ChapterJob:
+        slug = self._unique_slug(slugify(title))
+        job = ChapterJob(title=title, source=source, slug=slug, state=QUEUED)
+        job.to_status(self.chapter_dir(slug))
+        return job
+
+    def scan(self) -> list[ChapterJob]:
+        jobs = []
+        for name in os.listdir(self.root):
+            d = self.chapter_dir(name)
+            if not os.path.isfile(os.path.join(d, STATUS_FILE)):
+                continue
+            try:
+                job = ChapterJob.from_status(d)
+            except Exception:
+                continue
+            if job.state == PREPPING:      # app died mid-prep -> re-queue
+                job.state = QUEUED
+                job.to_status(d)
+            jobs.append(job)
+        jobs.sort(key=lambda j: j.updated_at)
+        return jobs
+
+    def set_state(self, slug: str, state: str) -> ChapterJob:
+        assert state in VALID_STATES, state
+        d = self.chapter_dir(slug)
+        job = ChapterJob.from_status(d)
+        job.state = state
+        job.to_status(d)
+        return job
+
+    def advance(self, slug: str) -> ChapterJob:
+        d = self.chapter_dir(slug)
+        job = ChapterJob.from_status(d)
+        job.state = NEXT_STATE[job.state]
+        job.error = None
+        job.to_status(d)
+        return job
+
+    def set_error(self, slug: str, msg: str) -> ChapterJob:
+        d = self.chapter_dir(slug)
+        job = ChapterJob.from_status(d)
+        job.state = ERROR
+        job.error = msg
+        job.to_status(d)
+        return job
+
+    def retry(self, slug: str) -> ChapterJob:
+        d = self.chapter_dir(slug)
+        job = ChapterJob.from_status(d)
+        job.state = QUEUED
+        job.error = None
+        job.to_status(d)
+        return job
