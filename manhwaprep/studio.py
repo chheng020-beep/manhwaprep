@@ -11,6 +11,7 @@ import os
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from . import typeset_prep
 
 QUEUED = "queued"
 PREPPING = "prepping"
@@ -123,3 +124,30 @@ class Studio:
         job.error = None
         job.to_status(d)
         return job
+
+
+def write_transcript_txt(layout_path: str) -> str:
+    with open(layout_path, encoding="utf-8") as f:
+        layout = json.load(f)
+    lines = []
+    for seg in layout.get("segments", []):
+        for it in seg.get("items", []):
+            lines.append(f"{it['n']}. [{it['kind']}] {it['src']}")
+    out = os.path.join(os.path.dirname(layout_path), "transcript.txt")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return out
+
+
+def prep_job(studio: "Studio", slug: str, prep_fn=typeset_prep.prep,
+             control=None, on_status=None) -> None:
+    d = studio.chapter_dir(slug)
+    job = ChapterJob.from_status(d)
+    studio.set_state(slug, PREPPING)
+    try:
+        layout_path = prep_fn(out_dir=d, source=job.source,
+                              control=control, on_status=on_status)
+        write_transcript_txt(layout_path)
+        studio.advance(slug)  # prepping -> typeset
+    except Exception as e:
+        studio.set_error(slug, str(e))
