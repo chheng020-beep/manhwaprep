@@ -45,3 +45,43 @@ def test_ready_callback_fires():
         ed.set_ready_callback(lambda: fired.append(True))
         ed._on_ready_to_cut()   # the button's slot
         assert fired == [True]
+
+
+def test_tab_routes_typeset_to_editor():
+    import manhwaprep.studio as studio
+    from manhwaprep.studio_tab import StudioTab
+    from manhwaprep.typeset_editor import TypesetEditor
+
+    with tempfile.TemporaryDirectory() as root:
+        st = studio.Studio(root)
+        # build a chapter already in 'typeset' with a real layout on disk
+        j = st.add("http://x/1", "one")
+        cdir = st.chapter_dir(j.slug)
+        _make_layout(cdir)              # writes typeset/layout.json + canvas
+        st.set_state(j.slug, studio.TYPESET)
+
+        tab = StudioTab(st)
+        tab.refresh()
+        tab.open_gate(j.slug)
+        assert isinstance(tab._gate_widget, TypesetEditor)
+
+
+def test_tab_cut_gate_opens_splitter_and_advance_on_export():
+    import manhwaprep.studio as studio
+    from manhwaprep.studio_tab import StudioTab
+    from manhwaprep.manual_split import ManualSplitWidget
+
+    with tempfile.TemporaryDirectory() as root:
+        st = studio.Studio(root)
+        j = st.add("http://x/1", "one")
+        cdir = st.chapter_dir(j.slug)
+        _make_layout(cdir)
+        st.set_state(j.slug, studio.CUT)
+
+        tab = StudioTab(st)
+        tab.refresh()
+        tab.open_gate(j.slug)
+        assert isinstance(tab._gate_widget, ManualSplitWidget)
+        # simulate splitter finishing an export
+        tab._on_split_export(j.slug)
+        assert studio.ChapterJob.from_status(cdir).state == studio.DONE
