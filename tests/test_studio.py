@@ -94,3 +94,26 @@ def test_prep_job_failure_sets_error():
         studio.prep_job(st, j.slug, prep_fn=boom)
         job = studio.ChapterJob.from_status(st.chapter_dir(j.slug))
         assert job.state == studio.ERROR and "no pages" in job.error
+
+
+def test_run_queue_processes_all_queued():
+    with tempfile.TemporaryDirectory() as root:
+        st = studio.Studio(root)
+        a = st.add("http://x/1", "one")
+        b = st.add("http://x/2", "two")
+        seen = []
+        n = studio.run_queue(st, prep_fn=_fake_prep, on_job_change=seen.append)
+        assert n == 2
+        assert studio.ChapterJob.from_status(st.chapter_dir(a.slug)).state == studio.TYPESET
+        assert studio.ChapterJob.from_status(st.chapter_dir(b.slug)).state == studio.TYPESET
+        assert a.slug in seen and b.slug in seen
+
+
+def test_run_queue_stops_on_control():
+    with tempfile.TemporaryDirectory() as root:
+        st = studio.Studio(root)
+        st.add("http://x/1", "one")
+        from manhwaprep.control import Control
+        ctl = Control(); ctl.request_stop()
+        n = studio.run_queue(st, prep_fn=_fake_prep, control=ctl)
+        assert n == 0  # stopped before processing

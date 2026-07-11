@@ -151,3 +151,20 @@ def prep_job(studio: "Studio", slug: str, prep_fn=typeset_prep.prep,
         studio.advance(slug)  # prepping -> typeset
     except Exception as e:
         studio.set_error(slug, str(e))
+
+
+def run_queue(studio: "Studio", prep_fn=typeset_prep.prep, control=None,
+              on_status=None, on_job_change=None) -> int:
+    processed = 0
+    while True:
+        if control is not None and control.is_stopped():
+            break
+        queued = [j for j in studio.scan() if j.state == QUEUED]
+        if not queued:
+            break
+        slug = queued[0].slug
+        prep_job(studio, slug, prep_fn=prep_fn, control=control, on_status=on_status)
+        processed += 1
+        if on_job_change:
+            on_job_change(slug)
+    return processed
