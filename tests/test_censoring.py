@@ -135,3 +135,38 @@ def test_undo_redo_censor_add_and_delete():
         assert len(ed.censors) == 0
         ed._undo()
         assert len(ed.censors) == 1
+
+
+def test_auto_censor_adds_detected_boxes(monkeypatch):
+    from manhwaprep.typeset_editor import TypesetEditor
+    from manhwaprep import nsfw as nsfw_mod
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))
+        monkeypatch.setattr(nsfw_mod, "ensure_installed", lambda parent=None: True)
+        monkeypatch.setattr(nsfw_mod, "detect", lambda bgr, **k: [
+            {"x": 10, "y": 12, "w": 20, "h": 22, "source": "auto"}])
+        ed._auto_censor()
+        assert len(ed.censors) == 1
+        assert ed.censors[0].source == "auto"
+        assert ed.censors[0].to_dict() == {"x": 10, "y": 12, "w": 20, "h": 22, "source": "auto"}
+
+
+def test_auto_censor_noop_when_detector_unavailable(monkeypatch):
+    from manhwaprep.typeset_editor import TypesetEditor
+    from manhwaprep import nsfw as nsfw_mod
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))
+        monkeypatch.setattr(nsfw_mod, "ensure_installed", lambda parent=None: False)
+        ed._auto_censor()
+        assert ed.censors == []
+
+
+def test_toggle_hides_preview_only(monkeypatch):
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))
+        c = ed._make_censor(10, 10, 30, 30, "manual")
+        ed._toggle_censor_layer(False)
+        assert ed._censor_visible is False and c.isVisible() is False
+        ed._toggle_censor_layer(True)
+        assert ed._censor_visible is True and c.isVisible() is True

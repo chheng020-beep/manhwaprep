@@ -1630,6 +1630,22 @@ class TypesetEditor(QWidget):
         col.addLayout(bar)
         self._tool_buttons["select"].setChecked(True)
 
+        crow = QHBoxLayout()
+        crow.setSpacing(4)
+        self.auto_censor_btn = QPushButton("Censor 18+")
+        self.auto_censor_btn.setToolTip(
+            "One-click: pixelate all detected adult parts on this canvas")
+        self.auto_censor_btn.clicked.connect(self._auto_censor)
+        self.censor_toggle_btn = QPushButton("Censor")
+        self.censor_toggle_btn.setCheckable(True)
+        self.censor_toggle_btn.setChecked(True)
+        self.censor_toggle_btn.setToolTip(
+            "Show/hide censors in the preview (export always censors)")
+        self.censor_toggle_btn.toggled.connect(self._toggle_censor_layer)
+        crow.addWidget(self.auto_censor_btn, 1)
+        crow.addWidget(self.censor_toggle_btn)
+        col.addLayout(crow)
+
         # brush group — only visible while a paint tool is active
         self.brush_group = QGroupBox("Brush")
         bg = QVBoxLayout(self.brush_group)
@@ -2342,6 +2358,40 @@ class TypesetEditor(QWidget):
             return
         self._make_censor(int(x), int(y), int(w), int(h), "manual")
         self._record_if_changed()
+
+    def _auto_censor(self):
+        """One-click: detect FB-restricted parts on the current canvas and drop
+        a pixelated censor on each. Manual add/delete still works if the
+        detector is unavailable."""
+        if self._work_np is None:
+            return
+        if not nsfw.ensure_installed(self):
+            QMessageBox.warning(
+                self, "Censor 18+",
+                "The NudeNet detector isn't available (install failed or no "
+                "internet). You can still draw censors by hand with the Cen tool.")
+            return
+        try:
+            boxes = nsfw.detect(self._work_np)
+        except Exception as e:
+            QMessageBox.warning(self, "Censor 18+", f"Detection failed:\n{e}")
+            return
+        if not boxes:
+            QMessageBox.information(
+                self, "Censor 18+",
+                "No adult regions detected on this canvas — add any by hand "
+                "with the Cen tool if needed.")
+            return
+        for b in boxes:
+            self._make_censor(b["x"], b["y"], b["w"], b["h"], "auto")
+        self._record_if_changed()
+
+    def _toggle_censor_layer(self, checked):
+        """Show/hide the censor layer in the EDITOR PREVIEW only. Export always
+        bakes every censor regardless of this toggle."""
+        self._censor_visible = bool(checked)
+        for c in self.censors:
+            c.setVisible(self._censor_visible)
 
     def _delete_selected(self):
         for it in list(self.scene.selectedItems()):
