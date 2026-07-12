@@ -97,3 +97,41 @@ def test_censor_persists_across_project_save_load():
         ed2 = TypesetEditor(p, resume=True)
         assert ed2.segments[0]["_censors"] == [
             {"x": 7, "y": 8, "w": 15, "h": 16, "source": "manual"}]
+
+
+def test_add_censor_from_drag_and_ignore_tiny():
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))
+        ed._add_censor(10, 10, 60, 50)      # 50x40 -> kept
+        ed._add_censor(10, 10, 13, 13)      # 3x3 -> ignored
+        assert len(ed.censors) == 1
+        assert ed.censors[0].to_dict() == {"x": 10, "y": 10, "w": 50, "h": 40, "source": "manual"}
+
+
+def test_delete_selected_removes_censor():
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))
+        c = ed._make_censor(10, 10, 30, 30, "manual")
+        c.setSelected(True)
+        ed._delete_selected()
+        assert ed.censors == [] and c not in ed.scene.items()
+
+
+def test_undo_redo_censor_add_and_delete():
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))
+        ed._add_censor(10, 10, 50, 50)
+        assert len(ed.censors) == 1
+        ed._undo()
+        assert len(ed.censors) == 0
+        ed._redo()
+        assert len(ed.censors) == 1
+        # now delete + undo restores it
+        ed.censors[0].setSelected(True)
+        ed._delete_selected()
+        assert len(ed.censors) == 0
+        ed._undo()
+        assert len(ed.censors) == 1

@@ -1081,7 +1081,7 @@ class _CanvasView(QGraphicsView):
     def mousePressEvent(self, e):
         if self.editor and e.button() == Qt.LeftButton:
             eff = self._eff_tool(e.modifiers())
-            if eff == "boxremove":
+            if eff == "boxremove" or self.tool == "censor":
                 self._box0 = self._box1 = self.mapToScene(e.position().toPoint())
                 self.viewport().update()
                 e.accept()
@@ -1123,9 +1123,11 @@ class _CanvasView(QGraphicsView):
         if not self.editor:
             return
         if self._box0 is not None and self._box1 is not None:
-            pen = QPen(QColor(255, 0, 0)); pen.setCosmetic(True)
+            censoring = self.tool == "censor"
+            col = QColor(230, 0, 200) if censoring else QColor(255, 0, 0)
+            pen = QPen(col); pen.setCosmetic(True)
             pen.setStyle(Qt.DashLine); p.setPen(pen)
-            p.setBrush(QColor(255, 0, 0, 40))
+            p.setBrush(QColor(col.red(), col.green(), col.blue(), 40))
             p.drawRect(QRectF(self._box0, self._box1).normalized())
             return
         if self.tool in self.BRUSH_TOOLS and self._brush_pt is not None:
@@ -1143,7 +1145,10 @@ class _CanvasView(QGraphicsView):
             self._box0 = self._box1 = None
             self.viewport().update()
             if self.editor:
-                self.editor._box_remove(a.x(), a.y(), b.x(), b.y())
+                if self.tool == "censor":
+                    self.editor._add_censor(a.x(), a.y(), b.x(), b.y())
+                else:
+                    self.editor._box_remove(a.x(), a.y(), b.x(), b.y())
             e.accept()
             return
         if self._painting:
@@ -1618,6 +1623,9 @@ class TypesetEditor(QWidget):
             "Box", "boxremove",
             "Box detect-remove — drag a box over a watermark; only the mark "
             "inside is erased, the art is kept"))
+        bar.addWidget(self._tool_button(
+            "Cen", "censor",
+            "Censor tool — drag a box over 18+ content to pixelate it"))
         bar.addStretch(1)
         col.addLayout(bar)
         self._tool_buttons["select"].setChecked(True)
@@ -2326,6 +2334,15 @@ class TypesetEditor(QWidget):
         self.censors.append(c)
         return c
 
+    def _add_censor(self, x0, y0, x1, y1):
+        """Turn a drag rectangle into a manual censor; ignore tiny boxes."""
+        x, y = min(x0, x1), min(y0, y1)
+        w, h = abs(x1 - x0), abs(y1 - y0)
+        if w < 8 or h < 8:
+            return
+        self._make_censor(int(x), int(y), int(w), int(h), "manual")
+        self._record_if_changed()
+
     def _delete_selected(self):
         for it in list(self.scene.selectedItems()):
             self.scene.removeItem(it)
@@ -2471,7 +2488,7 @@ class TypesetEditor(QWidget):
             self._tool_buttons[name].setChecked(True)
         painting = name != "select"
         # While painting, clicks paint the canvas rather than moving items.
-        for it in self.items + self.images:
+        for it in self.items + self.images + self.censors:
             it.setFlag(QGraphicsItem.ItemIsSelectable, not painting)
             it.setFlag(QGraphicsItem.ItemIsMovable, not painting)
         if painting:
@@ -2678,10 +2695,14 @@ class TypesetEditor(QWidget):
         for im in self.images:
             parts.append(("i", round(im.x()), round(im.y()), round(im.w),
                           round(im.h), round(im.rotation()), id(im._pix)))
+        for c in self.censors:
+            parts.append(("c", round(c.x()), round(c.y()), round(c.w),
+                          round(c.h), c.source))
         return (tuple(parts), id(self._work_np))
 
     def _reset_history(self):
         self._history = [{"state": self._snap_state(), "work": self._work_np,
+                          "censors": [c.to_dict() for c in self.censors],
                           "sig": self._sig()}]
         self._hist_idx = 0
         self._update_undo_buttons()
@@ -2689,6 +2710,7 @@ class TypesetEditor(QWidget):
     def _record(self):
         self._history = self._history[: self._hist_idx + 1]
         self._history.append({"state": self._snap_state(), "work": self._work_np,
+                              "censors": [c.to_dict() for c in self.censors],
                               "sig": self._sig()})
         if len(self._history) > 40:
             self._history.pop(0)
@@ -2704,6 +2726,15 @@ class TypesetEditor(QWidget):
         self._bg_pixmap = _bgr_to_qpixmap(self._work_np)
         self._bg_item.setPixmap(self._bg_pixmap)
         self._rebuild_from_state(snap["state"])
+        self._rebuild_censors(snap.get("censors", []))
+
+    def _rebuild_censors(self, cdicts):
+        for c in list(self.censors):
+            self.scene.removeItem(c)
+        self.censors = []
+        for cd in cdicts:
+            self._make_censor(cd["x"], cd["y"], cd["w"], cd["h"],
+                              cd.get("source", "manual"))
 
     def _undo(self):
         if self._hist_idx > 0:
