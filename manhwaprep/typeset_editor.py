@@ -74,6 +74,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import nsfw
+
 # Khmer has no spaces between words, so word-wrap alone leaves it as one huge
 # unbreakable line. WrapAtWordBoundaryOrAnywhere wraps English at spaces and
 # Khmer wherever it must, so both fit and measure correctly.
@@ -899,6 +901,147 @@ class ImageItem(QGraphicsItem):
         }
 
 
+class CensorItem(QGraphicsItem):
+    """A pixelated censor over a region of the art. Paints a live mosaic of the
+    real pixels beneath it (read from the editor's working raster via
+    `provider`), so what you see on screen is exactly what bakes into export.
+    Movable + freely resizable like ImageItem; a dashed magenta border and
+    z=-0.5 mark it as a censor sitting above the art but below the text."""
+
+    HANDLE = 11
+    EDGE_GRAB = 9.0
+    _CURSORS = TextBoxItem._CURSORS
+
+    def __init__(self, x, y, w, h, source="manual", provider=None):
+        super().__init__()
+        self.w = float(max(1, w))
+        self.h = float(max(1, h))
+        self.source = source
+        self._provider = provider  # () -> current BGR np array, or None
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
+        )
+        self.setAcceptHoverEvents(True)
+        self.setPos(x, y)
+        self.setZValue(-0.5)
+        self._resize = None
+        self._start = None
+
+    def boundingRect(self) -> QRectF:
+        m = self.HANDLE
+        return QRectF(-m, -m, self.w + 2 * m, self.h + 2 * m)
+
+    def _handles(self) -> dict:
+        w, h, s = self.w, self.h, self.HANDLE
+        pts = {
+            "tl": (0, 0), "tr": (w, 0), "bl": (0, h), "br": (w, h),
+            "t": (w / 2, 0), "b": (w / 2, h), "l": (0, h / 2), "r": (w, h / 2),
+        }
+        return {k: QRectF(px - s / 2, py - s / 2, s, s) for k, (px, py) in pts.items()}
+
+    def _handle_at(self, pos):
+        hs = self._handles()
+        for k in ("tl", "tr", "bl", "br"):
+            if hs[k].contains(pos):
+                return k
+        x, y, w, h, e = pos.x(), pos.y(), self.w, self.h, self.EDGE_GRAB
+        if -e <= y <= h + e:
+            if abs(x) <= e:
+                return "l"
+            if abs(x - w) <= e:
+                return "r"
+        if -e <= x <= w + e:
+            if abs(y) <= e:
+                return "t"
+            if abs(y - h) <= e:
+                return "b"
+        return None
+
+    def _mosaic_pixmap(self):
+        arr = self._provider() if self._provider else None
+        if arr is None:
+            return None, 0, 0
+        H, W = arr.shape[:2]
+        x0 = max(0, int(self.x())); y0 = max(0, int(self.y()))
+        x1 = min(W, int(self.x() + self.w)); y1 = min(H, int(self.y() + self.h))
+        if x1 <= x0 or y1 <= y0:
+            return None, 0, 0
+        mos = nsfw.pixelate(arr[y0:y1, x0:x1])
+        off_x = x0 - self.x()  # where the clamped region sits inside our rect
+        off_y = y0 - self.y()
+        return _bgr_to_qpixmap(mos), off_x, off_y
+
+    def paint(self, p, opt, widget=None):
+        pm, off_x, off_y = self._mosaic_pixmap()
+        if pm is not None:
+            p.drawPixmap(QRectF(off_x, off_y, pm.width(), pm.height()),
+                         pm, QRectF(pm.rect()))
+        else:
+            p.fillRect(QRectF(0, 0, self.w, self.h), QColor(40, 40, 40))
+        pen = QPen(QColor(230, 0, 200))
+        pen.setStyle(Qt.DashLine)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(0, 0, self.w, self.h))
+        if self.isSelected():
+            p.setBrush(QColor(255, 255, 255))
+            p.setPen(QPen(QColor(230, 0, 200)))
+            for hr in self._handles().values():
+                p.drawRect(hr)
+
+    def hoverMoveEvent(self, e):
+        k = self._handle_at(e.pos()) if self.isSelected() else None
+        self.setCursor(self._CURSORS.get(k, Qt.OpenHandCursor))
+        super().hoverMoveEvent(e)
+
+    def mousePressEvent(self, e):
+        k = self._handle_at(e.pos()) if self.isSelected() else None
+        if k:
+            self._resize = k
+            self._start = (self.w, self.h, self.x(), self.y(), 0.0, e.scenePos())
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if not self._resize:
+            super().mouseMoveEvent(e)
+            return
+        w0, h0, x0, y0, _, sp0 = self._start
+        d = e.scenePos() - sp0
+        dx, dy = d.x(), d.y()
+        k = self._resize
+        MIN = 8.0
+        neww, newh, newx, newy = w0, h0, x0, y0
+        if k in ("r", "tr", "br"):
+            neww, newx = max(MIN, w0 + dx), x0
+        elif k in ("l", "tl", "bl"):
+            neww = max(MIN, w0 - dx)
+            newx = x0 + (w0 - neww)
+        if k in ("b", "bl", "br"):
+            newh, newy = max(MIN, h0 + dy), y0
+        elif k in ("t", "tl", "tr"):
+            newh = max(MIN, h0 - dy)
+            newy = y0 + (h0 - newh)
+        self.prepareGeometryChange()
+        self.w, self.h = neww, newh
+        self.setPos(newx, newy)
+        self.update()
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if self._resize:
+            self._resize = None
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
+
+    def to_dict(self):
+        return {"x": int(self.x()), "y": int(self.y()),
+                "w": int(self.w), "h": int(self.h), "source": self.source}
+
+
 class _CanvasView(QGraphicsView):
     """Graphics view with Ctrl+wheel zoom (plain wheel scrolls). In a paint tool
     (blend / erase / paint) a left-drag paints onto the canvas instead of moving
@@ -1313,6 +1456,8 @@ class TypesetEditor(QWidget):
         self._hl_pixmap = None
         self._hl_item = None
         self._history = []
+        self.censors = []      # CensorItem list for the current segment
+        self._censor_visible = True
         self._hist_idx = -1
 
         self.setWindowTitle(f"Typeset — {self.layout.get('chapter', '')}")
@@ -1753,6 +1898,7 @@ class TypesetEditor(QWidget):
                 [it.to_dict() for it in self.items]
                 + [im.to_dict() for im in self.images]
             )
+            seg["_censors"] = [c.to_dict() for c in self.censors]
             # keep the painted canvas only when it actually differs from the art
             if (self._work_np is not None and self._orig_np is not None
                     and not np.array_equal(self._work_np, self._orig_np)):
@@ -1817,6 +1963,7 @@ class TypesetEditor(QWidget):
         self.scene.clear()
         self.items = []
         self.images = []
+        self.censors = []
         # working raster: edits (blend/paint) bake here; eraser restores _orig_np.
         self._orig_np = cv2.imread(os.path.join(self.base, seg["image"]))
         if self._orig_np is None:
@@ -1847,6 +1994,9 @@ class TypesetEditor(QWidget):
                 it.on_edit = self._start_inline_edit
                 self.scene.addItem(it)
                 self.items.append(it)
+        for cd in seg.get("_censors", []):
+            self._make_censor(cd["x"], cd["y"], cd["w"], cd["h"],
+                              cd.get("source", "manual"))
         self.seg_lbl.setText(f"Canvas {idx + 1}/{len(self.segments)}")
         self.prev.setEnabled(idx > 0)
         self.next.setEnabled(idx < len(self.segments) - 1)
@@ -2165,6 +2315,17 @@ class TypesetEditor(QWidget):
             it.setSelected(True)
         self._record_if_changed()
 
+    def _censor_provider(self):
+        return self._work_np
+
+    def _make_censor(self, x, y, w, h, source="manual"):
+        """Create a CensorItem, add it to the scene + self.censors, return it."""
+        c = CensorItem(x, y, w, h, source, provider=self._censor_provider)
+        c.setVisible(self._censor_visible)
+        self.scene.addItem(c)
+        self.censors.append(c)
+        return c
+
     def _delete_selected(self):
         for it in list(self.scene.selectedItems()):
             self.scene.removeItem(it)
@@ -2172,6 +2333,8 @@ class TypesetEditor(QWidget):
                 self.items.remove(it)
             if it in self.images:
                 self.images.remove(it)
+            if it in self.censors:
+                self.censors.remove(it)
         self._record_if_changed()
 
     def keyPressEvent(self, e):
@@ -2999,7 +3162,8 @@ class TypesetEditor(QWidget):
             return False
         segs = []
         for s in self.segments:
-            entry = {"image": s["image"], "state": s.get("_state", [])}
+            entry = {"image": s["image"], "state": s.get("_state", []),
+                     "censors": s.get("_censors", [])}
             work = s.get("_work_np")  # painted / watermark-removed canvas
             if work is not None:
                 wname = os.path.splitext(s["image"])[0] + "_work.png"
@@ -3057,6 +3221,8 @@ class TypesetEditor(QWidget):
                 continue
             if sp.get("state"):
                 seg["_state"] = sp["state"]
+            if sp.get("censors"):
+                seg["_censors"] = sp["censors"]
             if sp.get("work"):
                 wp = os.path.join(self.base, sp["work"])
                 arr = cv2.imread(wp) if os.path.exists(wp) else None
