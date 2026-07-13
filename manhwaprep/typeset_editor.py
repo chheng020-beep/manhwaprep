@@ -3004,8 +3004,18 @@ class TypesetEditor(QWidget):
         return getattr(self, "wm_chk", None) is not None and self.wm_chk.isChecked()
 
     def _save_render(self, seg, out: str, watermarked: bool):
-        """Render a canvas to disk, optionally stamping the corner logo."""
-        img = self._render(seg)
+        """Render a canvas to disk, optionally stamping the corner logo. All
+        censors are forced visible for the render so export ALWAYS bakes them,
+        regardless of the editor's preview toggle; prior visibility is restored
+        afterward."""
+        prev_vis = [(c, c.isVisible()) for c in self.censors]
+        for c in self.censors:
+            c.setVisible(True)
+        try:
+            img = self._render(seg)
+        finally:
+            for c, v in prev_vis:
+                c.setVisible(v)
         if watermarked:
             from PIL import Image as PILImage
             from . import watermark

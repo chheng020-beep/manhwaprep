@@ -170,3 +170,30 @@ def test_toggle_hides_preview_only(monkeypatch):
         assert ed._censor_visible is False and c.isVisible() is False
         ed._toggle_censor_layer(True)
         assert ed._censor_visible is True and c.isVisible() is True
+
+
+def test_export_bakes_censor_even_with_preview_off():
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ts = os.path.join(d, "typeset"); os.makedirs(ts, exist_ok=True)
+        grad = np.zeros((120, 100, 3), np.uint8)
+        grad[:, :, 1] = np.linspace(0, 255, 100, dtype=np.uint8)[None, :]  # G ramp L->R
+        cv2.imwrite(os.path.join(ts, "canvas_001.png"), grad)
+        layout = {"chapter": "t", "lang": "en", "segments": [
+            {"image": "canvas_001.png", "width": 100, "height": 120, "items": []}]}
+        p = os.path.join(ts, "layout.json")
+        json.dump(layout, open(p, "w", encoding="utf-8"))
+
+        ed = TypesetEditor(p)
+        ed._make_censor(20, 30, 50, 50, "manual")   # covers x20..70, y30..80
+        ed._toggle_censor_layer(False)              # preview OFF -> export must still bake
+        out = os.path.join(d, "rendered")
+        paths = ed.render_translated(out)
+        baked = cv2.imread(paths[0])
+
+        # inside the censor the smooth gradient is quantised into <=12 columns
+        region = baked[35:75, 25:65]
+        assert len(np.unique(region[:, :, 1])) <= 12
+        # a strip far outside the censor keeps the fine gradient (many values)
+        outside = baked[100:115, 5:95]
+        assert len(np.unique(outside[:, :, 1])) > 30
