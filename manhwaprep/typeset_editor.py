@@ -2294,7 +2294,7 @@ class TypesetEditor(QWidget):
     def _add_box(self):
         center = self.view.mapToScene(self.view.viewport().rect().center())
         n = max([it.n for it in self.items], default=0) + 1
-        it = TextBoxItem(n, "text", center.x() - 120, center.y() - 40, 240, 80)
+        it = TextBoxItem(n, "", center.x() - 120, center.y() - 40, 240, 80)
         it.on_edit = self._start_inline_edit
         self.scene.addItem(it)
         self.items.append(it)
@@ -3035,8 +3035,14 @@ class TypesetEditor(QWidget):
             img.save(out)
 
     def _export(self):
+        name, ok = QInputDialog.getText(
+            self, "Export", "Output folder name:", text="kh_export")
+        if not ok:
+            return
+        out_dir = os.path.join(self.base, name.strip() or "kh_export")
+        os.makedirs(out_dir, exist_ok=True)
         seg = self.segments[self.seg_idx]
-        out = os.path.join(self.base, seg["image"].replace(".png", "_kh.png"))
+        out = os.path.join(out_dir, seg["image"].replace(".png", "_kh.png"))
         self._save_render(seg, out, self._watermark_on())
         QMessageBox.information(self, "Exported", out)
 
@@ -3053,6 +3059,11 @@ class TypesetEditor(QWidget):
         return any(self._has_khmer(it.text) for it in self.items)
 
     def _export_all(self):
+        name, ok = QInputDialog.getText(
+            self, "Export all", "Output folder name:", text="kh_export")
+        if not ok:
+            return
+        kh_dir = os.path.join(self.base, name.strip() or "kh_export")
         self._commit_items()
         cur = self.seg_idx
         done, pending = [], []
@@ -3061,7 +3072,7 @@ class TypesetEditor(QWidget):
             self.seg_idx = i
             self._load_segment(i)
             translated = self._is_translated()
-            sub = self.base if translated else clean_dir
+            sub = kh_dir if translated else clean_dir
             os.makedirs(sub, exist_ok=True)
             out = os.path.join(sub, seg["image"].replace(".png", "_kh.png"))
             # clean_untranslated pages are work-in-progress — never stamp those
@@ -3069,9 +3080,9 @@ class TypesetEditor(QWidget):
             (done if translated else pending).append(out)
         self.seg_idx = cur
         self._load_segment(cur)
-        msg = f"{len(done)} translated canvas(es) → {self.base}"
+        msg = f"{len(done)} translated canvas(es) → {kh_dir}"
         if pending:
-            msg += (f"\n{len(pending)} not-yet-translated → {clean_dir}")
+            msg += f"\n{len(pending)} not-yet-translated → {clean_dir}"
         QMessageBox.information(self, "Exported all", msg)
 
     def render_translated(self, out_dir: str, watermarked: bool = False) -> list:
@@ -3204,7 +3215,11 @@ class TypesetEditor(QWidget):
     def _export_fb(self):
         from . import splitter
 
-        out_dir = os.path.join(self.base, "fb_panels")
+        name, ok = QInputDialog.getText(
+            self, "Export FB panels", "Output folder name:", text="fb_panels")
+        if not ok:
+            return
+        out_dir = os.path.join(self.base, name.strip() or "fb_panels")
         splitter.clear_panels(out_dir)
         bgr, slices = self._slice_canvas(self.segments[self.seg_idx])
         paths = splitter.write_panels(bgr, slices, out_dir, "panel", 1)
@@ -3222,8 +3237,12 @@ class TypesetEditor(QWidget):
     def _export_fb_all(self):
         from . import splitter
 
+        name, ok = QInputDialog.getText(
+            self, "Export FB panels (all)", "Output folder name:", text="fb_panels")
+        if not ok:
+            return
         self._commit_items()
-        out_dir = os.path.join(self.base, "fb_panels")
+        out_dir = os.path.join(self.base, name.strip() or "fb_panels")
         splitter.clear_panels(out_dir)
         idx, total = 1, 0  # one continuous numbering across all canvases
         for i, seg in enumerate(self.segments):
