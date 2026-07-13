@@ -197,3 +197,43 @@ def test_export_bakes_censor_even_with_preview_off():
         # a strip far outside the censor keeps the fine gradient (many values)
         outside = baked[100:115, 5:95]
         assert len(np.unique(outside[:, :, 1])) > 30
+
+
+def test_render_baked_bakes_censor_even_with_preview_off():
+    # _render_baked is the shared export path for PNG, FB panels AND PDF.
+    # With the preview toggle OFF the censor is hidden in the editor, but the
+    # baked render must still quantise the region and then restore visibility.
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ts = os.path.join(d, "typeset"); os.makedirs(ts, exist_ok=True)
+        grad = np.zeros((120, 100, 3), np.uint8)
+        grad[:, :, 1] = np.linspace(0, 255, 100, dtype=np.uint8)[None, :]
+        cv2.imwrite(os.path.join(ts, "canvas_001.png"), grad)
+        layout = {"chapter": "t", "lang": "en", "segments": [
+            {"image": "canvas_001.png", "width": 100, "height": 120, "items": []}]}
+        p = os.path.join(ts, "layout.json")
+        json.dump(layout, open(p, "w", encoding="utf-8"))
+
+        ed = TypesetEditor(p)
+        ed._make_censor(20, 30, 50, 50, "manual")
+        ed._toggle_censor_layer(False)              # hidden in preview
+        img = ed._render_baked(ed.segments[0])
+        baked = ed._qimage_to_bgr(img)
+        region = baked[35:75, 25:65]
+        assert len(np.unique(region[:, :, 1])) <= 12   # censor baked in
+        # preview visibility restored to OFF after the render
+        assert ed.censors[0].isVisible() is False
+
+
+def test_export_does_not_bake_censor_border():
+    # The magenta dashed border is an editor-only decoration; it must NOT
+    # appear in the exported/baked image (widget is None on offscreen render).
+    from manhwaprep.typeset_editor import TypesetEditor
+    with tempfile.TemporaryDirectory() as d:
+        ed = TypesetEditor(_make_layout(d))          # solid white canvas
+        ed._make_censor(20, 30, 50, 50, "manual")
+        baked = ed._qimage_to_bgr(ed._render_baked(ed.segments[0]))
+        # magenta border is (230,0,200) RGB == (200,0,230) BGR
+        magenta = ((baked[:, :, 0] > 150) & (baked[:, :, 1] < 80) &
+                   (baked[:, :, 2] > 150))
+        assert not magenta.any()

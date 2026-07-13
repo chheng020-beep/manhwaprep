@@ -978,6 +978,11 @@ class CensorItem(QGraphicsItem):
                          pm, QRectF(pm.rect()))
         else:
             p.fillRect(QRectF(0, 0, self.w, self.h), QColor(40, 40, 40))
+        # The dashed border + handles are editor-only decorations. When Qt
+        # renders the scene to an offscreen image for export (widget is None)
+        # we draw ONLY the mosaic, so nothing but the censor bakes in.
+        if widget is None:
+            return
         pen = QPen(QColor(230, 0, 200))
         pen.setStyle(Qt.DashLine)
         pen.setCosmetic(True)
@@ -3003,19 +3008,24 @@ class TypesetEditor(QWidget):
     def _watermark_on(self) -> bool:
         return getattr(self, "wm_chk", None) is not None and self.wm_chk.isChecked()
 
-    def _save_render(self, seg, out: str, watermarked: bool):
-        """Render a canvas to disk, optionally stamping the corner logo. All
-        censors are forced visible for the render so export ALWAYS bakes them,
-        regardless of the editor's preview toggle; prior visibility is restored
-        afterward."""
+    def _render_baked(self, seg) -> QImage:
+        """Like `_render`, but forces EVERY censor visible for the render so
+        export ALWAYS bakes them in, regardless of the editor's preview toggle;
+        prior preview visibility is restored afterward. Every export path
+        (PNG, FB panels, PDF) MUST render through this, never raw `_render`, or
+        toggling the preview off would leak uncensored art into the output."""
         prev_vis = [(c, c.isVisible()) for c in self.censors]
         for c in self.censors:
             c.setVisible(True)
         try:
-            img = self._render(seg)
+            return self._render(seg)
         finally:
             for c, v in prev_vis:
                 c.setVisible(v)
+
+    def _save_render(self, seg, out: str, watermarked: bool):
+        """Render a canvas to disk, optionally stamping the corner logo."""
+        img = self._render_baked(seg)
         if watermarked:
             from PIL import Image as PILImage
             from . import watermark
@@ -3114,7 +3124,7 @@ class TypesetEditor(QWidget):
             if not self._is_translated():   # leave un-translated pages out
                 skipped += 1
                 continue
-            bgr = self._qimage_to_bgr(self._render(seg))
+            bgr = self._qimage_to_bgr(self._render_baked(seg))
             page = Image.fromarray(np.ascontiguousarray(bgr[:, :, ::-1]))
             if self._watermark_on():
                 from . import watermark
@@ -3185,7 +3195,7 @@ class TypesetEditor(QWidget):
         steer the cuts; text boxes are never sliced)."""
         from . import splitter
 
-        bgr = self._qimage_to_bgr(self._render(seg))
+        bgr = self._qimage_to_bgr(self._render_baked(seg))
         protect = [(it.y(), it.y() + it.h) for it in self.items]
         slices = splitter.split_panels(
             bgr, protect=protect, desired_cuts=self._story_cuts(seg))
