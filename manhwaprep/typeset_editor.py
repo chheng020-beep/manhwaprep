@@ -285,6 +285,8 @@ class TextBoxItem(QGraphicsItem):
         self.on_edit = None  # set by the editor: callback(item) for inline edit
         self._editing = False  # True while the inline editor overlays this box
         self._rot_start = None        # (rot0_deg, angle0_deg) during rotation drag
+        self._px_cache = None         # QPixmap of last rendered text+effects
+        self._px_key   = None         # tuple of properties that built the cache
         self.setFlags(
             QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
         )
@@ -521,23 +523,16 @@ class TextBoxItem(QGraphicsItem):
                 bold_layout.draw(p, QPointF(r.x(), r.y() + y_off))
                 p.restore()
 
-    def paint(self, p, opt, widget=None):
-        r = QRectF(0, 0, self.w, self.h)
-        if self._editing:
-            return  # the inline overlay draws the text in our place (WYSIWYG)
+    def _paint_text_body(self, p, r):
+        """Render text + effects onto painter p (called into a QPixmap cache)."""
         p.save()
         p.setClipRect(r)
         p.setFont(self.font)
         flags = int(self.align) | WRAP_FLAGS
         ec = QColor(self.effect_color)
-
-        # ── Effects: pre-pass (rendered before main text) ─────────────────
-        pt = self._plain_text   # **markers** stripped — used for all outline/effect passes
+        pt = self._plain_text
         eff = self.effect
 
-        # All outline/effect passes must position text exactly like the main
-        # fill, or the layers ghost apart when line_spacing != 1.0. Build the
-        # spaced layout once per paint and reuse it for every pass.
         if self.line_spacing != 1.0 and pt:
             _lay, _th = self._text_layout()
             _yoff = 0.0
@@ -551,13 +546,13 @@ class TextBoxItem(QGraphicsItem):
         else:
             def _pass(dx, dy):
                 p.drawText(r.translated(dx, dy), flags, pt)
+
         if eff == "background" and pt:
             bg = QColor(ec); bg.setAlpha(180)
             p.setBrush(bg); p.setPen(Qt.NoPen)
             p.drawRoundedRect(r, 8, 8)
         if eff == "drop" and pt:
-            shadow = QColor(0, 0, 0, 120)
-            p.setPen(shadow)
+            p.setPen(QColor(0, 0, 0, 120))
             _pass(3, 3)
         if eff == "echo" and pt:
             echo_c = QColor(self.fill); echo_c.setAlpha(80)
@@ -565,46 +560,67 @@ class TextBoxItem(QGraphicsItem):
             _pass(4, 4)
         if eff == "glow" and pt:
             for alpha, offsets in (
-                (80, ((-5,0),(5,0),(0,-5),(0,5),(-4,-4),(4,-4),(-4,4),(4,4))),
+                (80,  ((-5,0),(5,0),(0,-5),(0,5),(-4,-4),(4,-4),(-4,4),(4,4))),
                 (100, ((-3,0),(3,0),(0,-3),(0,3),(-2,-2),(2,-2),(-2,2),(2,2))),
                 (120, ((-1,0),(1,0),(0,-1),(0,1))),
             ):
                 for gx, gy in offsets:
                     gc = QColor(ec); gc.setAlpha(alpha)
-                    p.setPen(gc)
-                    _pass(gx, gy)
+                    p.setPen(gc); _pass(gx, gy)
         if eff == "neon" and pt:
             for alpha, offs in ((60, 5), (100, 3), (140, 1)):
-                for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs),(-offs,-offs),(offs,-offs),(-offs,offs),(offs,offs)):
+                for gx, gy in ((-offs,0),(offs,0),(0,-offs),(0,offs),
+                               (-offs,-offs),(offs,-offs),(-offs,offs),(offs,offs)):
                     gc = QColor(ec); gc.setAlpha(alpha)
-                    p.setPen(gc)
-                    _pass(gx, gy)
+                    p.setPen(gc); _pass(gx, gy)
 
-        # ── Outline (white halo; colored+thick for outline effect) ──────────
+        # ── Outline — use QPainterPath stroking (O(1) instead of O(ow²)) ──
         ow = min(12, max(self.outline_w, round(self.font.pointSizeF() * 0.10)))
-        outline_pen = self.outline
+        outline_pen_color = QColor(ec if eff == "outline" else self.outline)
         if eff == "outline":
             ow = max(ow, 6)
-            outline_pen = ec
-        if ow > 0 and pt and eff != "hollow":
-            p.setPen(outline_pen)
-            for dx in range(-ow, ow + 1):
-                for dy in range(-ow, ow + 1):
-                    if (dx or dy) and dx * dx + dy * dy <= ow * ow:
-                        _pass(dx, dy)
+        if ow > 0 and pt and eff not in ("hollow",):
+            from PySide6.QtGui import QPainterPath as _QPP
+            fm = QFontMetricsF(self.font)
+            lh = fm.lineSpacing() * self.line_spacing
+            total_h = fm.boundingRect(
+                QRectF(0, 0, self.w, 1e7), flags, pt).height()
+            if int(self.align) & int(Qt.AlignVCenter):
+                y0 = (self.h - total_h) / 2 + fm.ascent()
+            elif int(self.align) & int(Qt.AlignBottom):
+                y0 = self.h - total_h + fm.ascent()
+            else:
+                y0 = fm.ascent()
+            y0 = max(fm.ascent(), y0)
+            path = _QPP()
+            ha = int(self.align) & (int(Qt.AlignLeft) |
+                                    int(Qt.AlignHCenter) |
+                                    int(Qt.AlignRight))
+            for line in (pt or "").split("\n") or [""]:
+                lw = fm.horizontalAdvance(line)
+                x0 = ((self.w - lw) / 2 if ha == int(Qt.AlignHCenter)
+                      else (self.w - lw if ha == int(Qt.AlignRight) else 0.0))
+                path.addText(x0, y0, self.font, line)
+                y0 += lh
+            stroke_pen = QPen(outline_pen_color, ow * 2,
+                              Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.strokePath(path, stroke_pen)
 
         # ── Main text fill ─────────────────────────────────────────────────
         if eff == "hollow" and pt:
-            path = QPainterPath()
             fm = QFontMetricsF(self.font)
             lh = fm.lineSpacing() * self.line_spacing
-            total_h = fm.boundingRect(QRectF(0, 0, self.w, 1e7), flags, pt).height()
+            total_h = fm.boundingRect(
+                QRectF(0, 0, self.w, 1e7), flags, pt).height()
             y0 = max(fm.ascent(), (self.h - total_h) / 2 + fm.ascent())
+            path = QPainterPath()
+            ha = int(self.align) & (int(Qt.AlignLeft) |
+                                    int(Qt.AlignHCenter) |
+                                    int(Qt.AlignRight))
             for line in (pt or "").split("\n") or [""]:
                 lw = fm.horizontalAdvance(line)
-                ha = int(self.align) & (int(Qt.AlignLeft)|int(Qt.AlignHCenter)|int(Qt.AlignRight))
-                x0 = (self.w - lw)/2 if ha == int(Qt.AlignHCenter) else (
-                    self.w - lw if ha == int(Qt.AlignRight) else 0.0)
+                x0 = ((self.w - lw) / 2 if ha == int(Qt.AlignHCenter)
+                      else (self.w - lw if ha == int(Qt.AlignRight) else 0.0))
                 path.addText(x0, y0, self.font, line)
                 y0 += lh
             pen = QPen(self.fill, max(1, ow)); pen.setJoinStyle(Qt.RoundJoin)
@@ -615,6 +631,40 @@ class TextBoxItem(QGraphicsItem):
             self._draw_text_fill(p, r, flags)
 
         p.restore()
+
+    def _make_px_key(self):
+        return (
+            self.text, round(self.w), round(self.h),
+            round(self.font.pointSizeF(), 1), self.font.family(),
+            self.outline_w, self.outline.rgba(), self.fill.rgba(),
+            self.effect, self.effect_color, int(self.align),
+            tuple(self.gradient_colors) if self.gradient_colors else None,
+            round(self.gradient_angle, 1), round(self.line_spacing, 2),
+        )
+
+    def paint(self, p, opt, widget=None):
+        r = QRectF(0, 0, self.w, self.h)
+        if self._editing:
+            return  # the inline overlay draws the text in our place (WYSIWYG)
+
+        # ── Pixmap cache: rebuild only when text/style changes ─────────────
+        key = self._make_px_key()
+        if key != self._px_key or self._px_cache is None:
+            from PySide6.QtGui import QPixmap
+            px_w = max(1, int(self.w))
+            px_h = max(1, int(self.h))
+            px = QPixmap(px_w, px_h)
+            px.fill(Qt.transparent)
+            pp = QPainter(px)
+            pp.setRenderHint(QPainter.Antialiasing)
+            pp.setRenderHint(QPainter.TextAntialiasing)
+            self._paint_text_body(pp, QRectF(0, 0, self.w, self.h))
+            pp.end()
+            self._px_cache = px
+            self._px_key   = key
+        p.drawPixmap(0, 0, self._px_cache)
+
+        # ── Selection handles (never cached) ────────────────────────────────
         if self.isSelected():
             pen = QPen(QColor(0, 150, 255))
             pen.setStyle(Qt.DashLine)
