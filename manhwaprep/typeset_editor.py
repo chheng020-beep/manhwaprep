@@ -3084,12 +3084,25 @@ class TypesetEditor(QWidget):
         else:
             img.save(out)
 
+    def _export_root(self) -> str:
+        """Walk up from self.base to the nearest ancestor named 'output'.
+        Falls back to self.base so existing single-file projects still work."""
+        path = os.path.abspath(self.base)
+        for _ in range(8):
+            if os.path.basename(path) == "output":
+                return path
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            path = parent
+        return self.base
+
     def _export(self):
         name, ok = QInputDialog.getText(
             self, "Export", "Output folder name:", text="kh_export")
         if not ok:
             return
-        out_dir = os.path.join(self.base, name.strip() or "kh_export")
+        out_dir = os.path.join(self._export_root(), name.strip() or "kh_export")
         os.makedirs(out_dir, exist_ok=True)
         seg = self.segments[self.seg_idx]
         out = os.path.join(out_dir, seg["image"].replace(".png", "_kh.png"))
@@ -3113,11 +3126,11 @@ class TypesetEditor(QWidget):
             self, "Export all", "Output folder name:", text="kh_export")
         if not ok:
             return
-        kh_dir = os.path.join(self.base, name.strip() or "kh_export")
+        kh_dir = os.path.join(self._export_root(), name.strip() or "kh_export")
         self._commit_items()
         cur = self.seg_idx
         done, pending = [], []
-        clean_dir = os.path.join(self.base, "clean_untranslated")
+        clean_dir = os.path.join(self._export_root(), "clean_untranslated")
         for i, seg in enumerate(self.segments):
             self.seg_idx = i
             self._load_segment(i)
@@ -3269,7 +3282,7 @@ class TypesetEditor(QWidget):
             self, "Export FB panels", "Output folder name:", text="fb_panels")
         if not ok:
             return
-        out_dir = os.path.join(self.base, name.strip() or "fb_panels")
+        out_dir = os.path.join(self._export_root(), name.strip() or "fb_panels")
         splitter.clear_panels(out_dir)
         bgr, slices = self._slice_canvas(self.segments[self.seg_idx])
         paths = splitter.write_panels(bgr, slices, out_dir, "panel", 1)
@@ -3292,7 +3305,7 @@ class TypesetEditor(QWidget):
         if not ok:
             return
         self._commit_items()
-        out_dir = os.path.join(self.base, name.strip() or "fb_panels")
+        out_dir = os.path.join(self._export_root(), name.strip() or "fb_panels")
         splitter.clear_panels(out_dir)
         idx, total = 1, 0  # one continuous numbering across all canvases
         for i, seg in enumerate(self.segments):
