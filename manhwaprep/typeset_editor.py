@@ -352,40 +352,41 @@ class TextBoxItem(QGraphicsItem):
         layout.endLayout()
         return layout, y
 
-    def _shaped_text_path(self, r: QRectF):
-        """Glyph outline path for the outline/hollow passes, built from the SAME
-        shaped, wrapped ``QTextLayout`` the fill uses — so the stroke sits exactly
-        on the fill instead of ghosting beside it.
-
-        The old approach laid each wrapped line out again by hand
-        (``QPainterPath.addText`` centred on ``fm.horizontalAdvance``, baselines
-        stepped manually). That second layout pass disagreed with the layout's own
-        per-line centring and baselines, and the drift compounded down the lines —
-        worst on centred, multi-line Khmer (subscripts/vowels shape differently
-        than a flat advance sum). Reading the glyphs straight out of the layout via
-        ``glyphRuns()`` (positions already shaped and wrapped) removes the second
-        layout entirely, so outline and fill are positionally identical by
-        construction. Returns ``None`` for empty text."""
-        pt = self._plain_text
-        if not pt:
-            return None
+    def _glyph_lines(self):
+        """Per-visual-line ``(segment, x_left, baseline_y)`` using the SAME
+        word-wrap and alignment as the main fill. The outline and hollow glyph
+        paths must reuse this — building glyph paths from a raw ``"\\n"`` split
+        (no wrap) makes them ghost apart from the wrapped fill on any balloon
+        whose text wraps (regressed by the pixmap-cache perf pass; see
+        test_outline_wrap)."""
+        pt = self._plain_text or ""
+        fm = QFontMetricsF(self.font)
+        lh = fm.lineSpacing() * self.line_spacing
         layout, total_h = self._text_layout()
-        y_off = 0.0
         if int(self.align) & int(Qt.AlignVCenter):
-            y_off = (r.height() - total_h) / 2
+            y_off = (self.h - total_h) / 2
         elif int(self.align) & int(Qt.AlignBottom):
-            y_off = r.height() - total_h
-        path = QPainterPath()
-        for run in layout.glyphRuns():
-            rf = run.rawFont()
-            idx = run.glyphIndexes()
-            pos = run.positions()
-            for i, gid in enumerate(idx):
-                gp = rf.pathForGlyph(gid)
-                gp.translate(pos[i])
-                path.addPath(gp)
-        path.translate(r.x(), r.y() + y_off)
-        return path
+            y_off = self.h - total_h
+        else:
+            y_off = 0.0
+        ha = int(self.align) & (int(Qt.AlignLeft) |
+                                int(Qt.AlignHCenter) |
+                                int(Qt.AlignRight))
+        base = fm.ascent() + max(0.0, y_off)  # never start above the box top
+        out = []
+        for i in range(layout.lineCount()):
+            ln = layout.lineAt(i)
+            seg = pt[ln.textStart(): ln.textStart() + ln.textLength()]
+            lw = fm.horizontalAdvance(seg)
+            if ha == int(Qt.AlignHCenter):
+                x0 = (self.w - lw) / 2
+            elif ha == int(Qt.AlignRight):
+                x0 = self.w - lw
+            else:
+                x0 = 0.0
+            out.append((seg, x0, base))
+            base += lh
+        return out
 
     @property
     def _plain_text(self) -> str:
@@ -454,16 +455,17 @@ class TextBoxItem(QGraphicsItem):
         mp.setFont(self.font)
         mp.setPen(Qt.white)
         mp.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-        # Match the exact layout the fill / outline passes use (see _draw_text_fill):
-        # always the shared QTextLayout, never drawText, so the gradient mask lines
-        # up with the outline stroke.
-        layout, th = self._text_layout()
-        y_off = 0.0
-        if int(self.align) & int(Qt.AlignVCenter):
-            y_off = (ih - th) / 2
-        elif int(self.align) & int(Qt.AlignBottom):
-            y_off = ih - th
-        layout.draw(mp, QPointF(0, y_off))
+        if self.line_spacing == 1.0:
+            mp.drawText(QRectF(0, 0, iw, ih), flags, self._plain_text or "")
+        else:
+            # match the spaced layout used by the fill / outline passes
+            layout, th = self._text_layout()
+            y_off = 0.0
+            if int(self.align) & int(Qt.AlignVCenter):
+                y_off = (ih - th) / 2
+            elif int(self.align) & int(Qt.AlignBottom):
+                y_off = ih - th
+            layout.draw(mp, QPointF(0, y_off))
         mp.end()
         # 2. Fill gradient then punch out text shape with DestinationIn
         # Format_ARGB32 (non-premultiplied) for reliable compositing on all platforms
@@ -483,12 +485,12 @@ class TextBoxItem(QGraphicsItem):
         runs = re.split(r'(\*\*.+?\*\*)', self.text or '', flags=re.DOTALL)
         has_bold = any(s.startswith('**') for s in runs)
 
-        # Always render through the shared QTextLayout — never QPainter.drawText.
-        # The outline/hollow stroke is built from this same layout's glyph runs, and
-        # drawText wraps and (crucially) spaces lines by the font's natural line
-        # height, while the layout steps by fm.lineSpacing(); on fonts where those
-        # differ the two walk apart down the lines and the halo detaches from the
-        # fill (worst on narrow, heavily-wrapped Khmer). One layout ⇒ they can't.
+        if not has_bold and self.line_spacing == 1.0:
+            p.setPen(self.fill)
+            p.drawText(r, flags, self.text or "")
+            return
+
+        # Use QTextLayout for custom line spacing and/or per-run bold
         from PySide6.QtGui import QTextLayout, QTextOption
         layout, total_h = self._text_layout()
         y_off = 0.0
@@ -614,18 +616,23 @@ class TextBoxItem(QGraphicsItem):
         if eff == "outline":
             ow = max(ow, 6)
         if ow > 0 and pt and eff not in ("hollow",):
-            path = self._shaped_text_path(r)
-            if path is not None:
-                stroke_pen = QPen(outline_pen_color, ow * 2,
-                                  Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-                p.strokePath(path, stroke_pen)
+            from PySide6.QtGui import QPainterPath as _QPP
+            path = _QPP()
+            for seg, x0, base in self._glyph_lines():
+                if seg:
+                    path.addText(x0, base, self.font, seg)
+            stroke_pen = QPen(outline_pen_color, ow * 2,
+                              Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.strokePath(path, stroke_pen)
 
         # ── Main text fill ─────────────────────────────────────────────────
         if eff == "hollow" and pt:
-            path = self._shaped_text_path(r)
-            if path is not None:
-                pen = QPen(self.fill, max(1, ow)); pen.setJoinStyle(Qt.RoundJoin)
-                p.strokePath(path, pen)
+            path = QPainterPath()
+            for seg, x0, base in self._glyph_lines():
+                if seg:
+                    path.addText(x0, base, self.font, seg)
+            pen = QPen(self.fill, max(1, ow)); pen.setJoinStyle(Qt.RoundJoin)
+            p.strokePath(path, pen)
         elif self.gradient_colors:
             self._draw_gradient_text(p, r, flags)
         else:
