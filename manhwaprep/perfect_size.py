@@ -118,3 +118,90 @@ def segment(text: str, words: set[str] | None = None) -> list[str]:
             # keep each "word + following spaces" as one token (lossless)
             toks.extend(re.findall(r"\S+\s*|\s+", run))
     return toks
+
+
+# --- fit(): largest font size whose wrapped, balanced text fills a box --------
+from PySide6.QtGui import QFont, QFontMetricsF
+
+
+def _wrap(tokens, avail_w, fm):
+    """Greedily pack tokens into lines no wider than avail_w. A single token wider
+    than avail_w is split at syllables, then characters, so width never overflows."""
+    lines, cur = [], ""
+    for tok in tokens:
+        trial = cur + tok
+        if fm.horizontalAdvance(trial.rstrip()) <= avail_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur.rstrip())
+            cur = tok
+        # hard-split an over-wide standalone token
+        while fm.horizontalAdvance(cur.rstrip()) > avail_w and len(cur.strip()) > 1:
+            pieces = syllable_split(cur) if _KHMER_CHAR.search(cur) else list(cur)
+            head = ""
+            for p in pieces:
+                if fm.horizontalAdvance((head + p).rstrip()) > avail_w and head:
+                    break
+                head += p
+            if not head or head == cur:
+                break
+            lines.append(head.rstrip())
+            cur = cur[len(head):]
+    if cur.strip():
+        lines.append(cur.rstrip())
+    return lines
+
+
+def balance_lines(tokens, n_lines, avail_w, fm):
+    """Redistribute tokens across n_lines to even out line widths (reduce the
+    widest line), keeping every line within avail_w. Simple greedy target-width
+    pass — good enough; not optimised."""
+    if n_lines <= 1:
+        return [("".join(tokens)).rstrip()]
+    total = fm.horizontalAdvance("".join(tokens).rstrip())
+    target = total / n_lines
+    lines, cur, cur_w = [], "", 0.0
+    for tok in tokens:
+        tw = fm.horizontalAdvance(tok)
+        if cur and cur_w + tw > target * 1.15 and len(lines) < n_lines - 1 \
+                and fm.horizontalAdvance((cur).rstrip()) <= avail_w:
+            lines.append(cur.rstrip()); cur, cur_w = "", 0.0
+        cur += tok; cur_w += tw
+    if cur.strip():
+        lines.append(cur.rstrip())
+    # never exceed n_lines or avail_w -> fall back to plain wrap if we did
+    if len(lines) > n_lines or any(fm.horizontalAdvance(l) > avail_w + 1 for l in lines):
+        return _wrap(tokens, avail_w, fm)
+    return lines
+
+
+def fit(text, box_w, box_h, font_family, margin=0.06, size_min=6.0, size_max=200.0):
+    tokens = segment(text)
+    if not "".join(tokens).strip():
+        return size_min, []
+
+    def feasible(size, m):
+        f = QFont(font_family); f.setPointSizeF(size); fm = QFontMetricsF(f)
+        aw, ah = box_w * (1 - 2 * m), box_h * (1 - 2 * m)
+        lines = _wrap(tokens, aw, fm)
+        ok = len(lines) * fm.lineSpacing() <= ah and \
+            all(fm.horizontalAdvance(l) <= aw for l in lines)
+        return ok, lines, fm, aw
+
+    # binary search the largest feasible size (0.5pt resolution is plenty)
+    lo, hi, best = size_min, size_max, None
+    while hi - lo > 0.5:
+        mid = (lo + hi) / 2
+        ok, lines, fm, aw = feasible(mid, margin)
+        if ok:
+            best = (mid, lines, fm, aw)
+            lo = mid
+        else:
+            hi = mid
+    if best is None:
+        # overflow fallback: drop the margin, then accept size_min
+        ok, lines, fm, aw = feasible(size_min, 0.0)
+        return size_min, lines if lines else [text]
+    size, lines, fm, aw = best
+    lines = balance_lines(tokens, len(lines), aw, fm)
+    return round(size, 1), lines
