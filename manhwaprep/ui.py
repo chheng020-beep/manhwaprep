@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QProgressDialog,
@@ -39,6 +40,7 @@ from .manual_split import ManualSplitWidget
 from .pipeline import run, run_for_batch
 from .studio import Studio
 from .studio_tab import StudioTab
+from . import relaunch
 
 
 def _ocr_available() -> bool:
@@ -200,9 +202,18 @@ class MainWindow(QWidget):
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(12)
 
+        header = QHBoxLayout()
         title = QLabel("ManhwaPrep")
         title.setFont(QFont("", 22, QFont.Bold))
-        root.addWidget(title)
+        header.addWidget(title)
+        header.addStretch(1)
+        self.new_window_btn = QPushButton("＋ New Window")
+        self.new_window_btn.setToolTip(
+            "Open a second, independent app window — prep one chapter while working another."
+        )
+        self.new_window_btn.clicked.connect(self._on_new_window)
+        header.addWidget(self.new_window_btn)
+        root.addLayout(header)
         sub = QLabel("Pick a job below, then drop a folder/image (or paste a link).")
         sub.setStyleSheet("color:#777;")
         root.addWidget(sub)
@@ -499,6 +510,16 @@ class MainWindow(QWidget):
             self._refresh_projects()
 
     # -- actions -------------------------------------------------------
+    def _on_new_window(self):
+        try:
+            relaunch.spawn_new_window()
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Couldn't open a new window",
+                f"Failed to launch a second copy of ManhwaPrep:\n\n{e}",
+            )
+
     def _browse(self):
         path = QFileDialog.getExistingDirectory(self, "Choose chapter folder")
         if path:
