@@ -28,6 +28,7 @@ a = Analysis(
         ("manhwaprep/assets/icon.png", "manhwaprep/assets"),
         ("manhwaprep/assets/logo.png", "manhwaprep/assets"),
         ("manhwaprep/assets/fonts", "manhwaprep/assets/fonts"),
+        ("manhwaprep/assets/khmer_words.txt", "manhwaprep/assets"),
         ("manhwaprep/ocr_models", "manhwaprep/ocr_models"),
     ] + datas,
     hiddenimports=[
