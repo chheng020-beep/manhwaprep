@@ -59,3 +59,34 @@ def test_add_font_dedupe_and_cap_under_new_path(tmp_path, monkeypatch):
     assert fonts[0] == "Font0"
     assert len(fonts) <= 10
     assert len(fonts) == len(set(fonts))
+
+
+def test_add_recent_degrades_when_lock_file_fails(tmp_path, monkeypatch):
+    """Verify that _locked() degrades to no-op if lock file can't be opened.
+
+    This is the key resilience test: if the lock file itself fails to open
+    (permissions, disk full, network FS readonly), add_recent() must still
+    complete and write the entry rather than crash.
+    """
+    _point_registry_at(tmp_path, monkeypatch)
+    a = tmp_path / "ch4" / "layout.json"; a.parent.mkdir(parents=True); a.write_text("{}")
+
+    # Monkeypatch builtins.open to raise OSError only for .lock paths
+    import builtins
+    original_open = builtins.open
+    def fail_on_lock(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.endswith(".lock"):
+            raise OSError("Simulated lock file open failure (permission denied)")
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fail_on_lock)
+
+    # This should NOT crash even though lock file open fails
+    recents.add_recent(str(a), chapter="ch4")
+
+    # Verify the entry was still written
+    entries = recents.list_recent()
+    assert len(entries) == 1
+    assert entries[0]["chapter"] == "ch4"
+    assert entries[0]["layout"] == os.path.abspath(str(a))

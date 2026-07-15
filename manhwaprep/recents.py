@@ -25,16 +25,21 @@ def _locked(path: str):
     lock_path = path + ".lock"
     f = None
     try:
-        f = open(lock_path, "a+")
         try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f = open(lock_path, "a+")
         except Exception:
-            pass  # best-effort lock; still safe-ish via atomic replace
+            pass  # Degrade gracefully if lock file can't even be opened
+
+        if f is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass  # best-effort lock; still safe-ish via atomic replace
         yield
     finally:
         if f is not None:
