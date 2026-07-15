@@ -9,14 +9,16 @@ _app = QApplication.instance() or QApplication([])
 
 def test_apply_perfect_size_targets_a_big_size_and_grows_height():
     import manhwaprep.perfect_size as ps
-    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 300, 60)
+    w0 = 300
+    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, w0, 60)
     it.raw_text = it.text
     it.apply_perfect_size()
     assert it.fitted is True
-    # target-size model: font is one of the preferred sizes (40/35), not shrunk
-    assert it.max_size in ps.PREFER_SIZES
+    # big font, capped at 40, never larger; width fixed (no spill), height grew
+    assert 12.0 <= it.max_size <= ps.PREFER_SIZES[0]
+    assert abs(it.w - w0) < 1.0                # box width unchanged — never spills
     assert "\n" in it.text                     # long text wraps to several lines
-    assert it.h > 60                           # short box grew to fit the big text
+    assert it.h > 60                           # short box grew to fit the text
 
 
 def test_fitted_box_refit_is_noop_on_height():

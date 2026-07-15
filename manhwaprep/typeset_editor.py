@@ -301,50 +301,36 @@ class TextBoxItem(QGraphicsItem):
         self._refit()
 
     def apply_perfect_size(self, lines=None):
-        """Fill this box with the largest font + Khmer word-break layout that fits,
-        from self.raw_text. Holds the box size (no auto-grow).
+        """Fill this box with a big Khmer layout WITHOUT spilling or chopping words.
 
-        Auto-created boxes are the size of the ORIGINAL English text, which is
-        usually SHORT (one or two lines). Khmer is typically longer and taller, so
-        cramming it into that short height forces a tiny font — the "text is too
-        small" complaint. So first grow a short box toward bubble-ish proportions
-        (at least ~0.7x its width tall), symmetrically around its centre, so the
-        Khmer comes out big. A box already that tall (a bubble-sized or hand-drawn
-        box) keeps its height."""
+        The box WIDTH is fixed (growing it pushed text outside the bubble). Pick the
+        largest font (<= 40) at which every Khmer word fits that width — so no word
+        is ever split and nothing overflows sideways — then break into balanced,
+        symmetrical whole-word lines and grow only the HEIGHT to fit. `lines` (from
+        the LLM) are the preferred, already-balanced breaks; local breaks are
+        balanced with balance_lines."""
         src = (self.raw_text or self.text or "").strip()
         if not src:
             return
         fam = self.font.family()
         bold, italic = self.font.bold(), self.font.italic()
-        # HORIZONTAL bias: keep the font big (40, else 35) and grow the box WIDTH
-        # toward the canvas so the text lays out on as few, as-wide-as-possible
-        # lines — only breaking when a line would exceed that width. Then grow the
-        # HEIGHT to fit. `lines` (from the LLM) are preferred break points.
-        size = perfect_size.PREFER_SIZES[0]
-        target_w = self._horizontal_target_width(size, src)
-        chosen = None
-        for size in perfect_size.PREFER_SIZES:
-            wlines, fits = perfect_size.wrap_at_size(
-                src, target_w, size, fam, bold=bold, italic=italic, prefer_lines=lines)
-            if fits:
-                chosen = (size, wlines)
-                break
-        if chosen is None:
-            size, wlines = perfect_size.fit(
-                src, target_w, max(self.h, target_w * 0.6), fam,
-                line_spacing=self.line_spacing, bold=bold, italic=italic)
-            chosen = (size, wlines)
-        size, wlines = chosen
+        size = self._max_size_no_chop(self.w, src)
+        wlines, _ = perfect_size.wrap_at_size(
+            src, self.w, size, fam, bold=bold, italic=italic, prefer_lines=lines)
+        if not lines:
+            # symmetrical local breaks (the LLM already balances the lines it gives)
+            _f = QFont(fam); _f.setPointSizeF(size)
+            _f.setBold(bold); _f.setItalic(italic)
+            avail = self.w * (1 - 2 * 0.06)
+            wlines = perfect_size.balance_lines(
+                perfect_size.segment(src), len(wlines), avail, QFontMetricsF(_f))
         _f = QFont(fam); _f.setPointSizeF(size); _f.setBold(bold); _f.setItalic(italic)
         need_h = len(wlines) * QFontMetricsF(_f).lineSpacing() * self.line_spacing + 6
-        # resize the box around its current centre (width can grow, height follows)
-        cx = self.x() + self.w / 2
+        # width stays put; only the height grows, around the current centre
         cy = self.y() + self.h / 2
         self.prepareGeometryChange()
-        self.w = max(24.0, target_w)
         self.h = max(8.0, need_h)
-        self.setPos(cx - self.w / 2, cy - self.h / 2)
-        self.setTransformOriginPoint(self.w / 2, self.h / 2)
+        self.setY(cy - self.h / 2)
         self.max_size = size
         self.font.setPointSizeF(size)
         self.text = "\n".join(wlines)
@@ -352,20 +338,21 @@ class TextBoxItem(QGraphicsItem):
         self._px_key = None       # invalidate pixmap cache
         self.update()
 
-    def _horizontal_target_width(self, size, src=None):
-        """Box width that lets `src` lay out on the fewest, widest lines at `size`,
-        capped by the canvas so it never spans the whole page. Grows the box wider
-        (never narrower than it is) for a horizontal, large-text look."""
-        import math
-        src = src or (self.raw_text or self.text or "")
-        f = QFont(self.font.family()); f.setPointSizeF(size)
+    def _max_size_no_chop(self, box_w, src, cap=None, floor=12.0):
+        """Largest font size (<= cap, default 40) at which the WIDEST Khmer word in
+        `src` still fits box_w — so wrapping never has to split a word and the text
+        never overflows the box width."""
+        cap = perfect_size.PREFER_SIZES[0] if cap is None else cap
+        f = QFont(self.font.family()); f.setPointSizeF(cap)
         f.setBold(self.font.bold()); f.setItalic(self.font.italic())
-        full = QFontMetricsF(f).horizontalAdvance(src.replace("\n", " "))
-        canvas_w = self.scene().sceneRect().width() if self.scene() else 720.0
-        cap = min(canvas_w * 0.92, 660.0)          # don't span more than this
-        avail = 0.88                                # 6% padding each side
-        n = max(1, math.ceil(full / (cap * avail)))  # fewest lines under the cap
-        return max(self.w, min(cap, (full / n) / avail * 1.06))
+        fm = QFontMetricsF(f)
+        toks = [t for t in perfect_size.segment((src or "").replace("\n", " "))
+                if t.strip()]
+        widest = max((fm.horizontalAdvance(t) for t in toks), default=1.0)
+        avail = box_w * (1 - 2 * 0.06)
+        if widest <= avail:
+            return cap
+        return max(floor, round(cap * avail / widest, 1))
 
     def _refit(self, top=None, bottom=None, min_h=None):
         """Canva-style AUTO-HEIGHT: keep the font fixed (max_size) and grow the
@@ -2284,17 +2271,17 @@ class TypesetEditor(QWidget):
         if not boxes:
             QMessageBox.information(self, "AI fit", "No text boxes on this canvas.")
             return
-        # how many Khmer chars fit one line at the target size — the LLM breaks to
-        # this budget so its (nice) lines already fit the width at size 40/35.
-        target = perfect_size.PREFER_SIZES[0]
+        # how many Khmer chars fit one line at each box's no-chop size, so the LLM
+        # breaks whole words into lines that already fit the box width.
         sample = "កខគឃងចឆជឈញ"
 
         def _max_chars(it):
-            tw = it._horizontal_target_width(target, it.raw_text or it.text)
-            f = QFont(it.font.family()); f.setPointSizeF(target)
+            src = it.raw_text or it.text
+            sz = it._max_size_no_chop(it.w, src)
+            f = QFont(it.font.family()); f.setPointSizeF(sz)
             f.setBold(it.font.bold()); f.setItalic(it.font.italic())
             avg = QFontMetricsF(f).horizontalAdvance(sample) / len(sample)
-            return max(4, int((tw * 0.88) / max(1.0, avg)))
+            return max(4, int((it.w * 0.88) / max(1.0, avg)))
 
         items = [{"n": it.n, "text": (it.raw_text or it.text), "w": it.w, "h": it.h,
                   "max_chars": _max_chars(it)} for it in boxes]

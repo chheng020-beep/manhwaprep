@@ -46,15 +46,20 @@ def model() -> str:
 
 
 _PROMPT = (
-    "You are typesetting Khmer manhwa speech bubbles. For each bubble, split its "
-    "Khmer text into display lines. Break ONLY at natural Khmer word / phrase "
-    "boundaries — never inside a word or a coeng (subscript) cluster. Keep each "
-    "line at or under the bubble's max_chars budget (that's how many Khmer "
-    "characters fit on one line at the display size — staying within it keeps the "
-    "text big); use as FEW lines as the budget allows, balancing their lengths. "
+    "You are typesetting Khmer manhwa speech bubbles. You read Khmer fluently, so "
+    "you know where each Khmer word ends. For each bubble, split its Khmer text "
+    "into display lines with these rules, in priority order:\n"
+    "1. NEVER split a Khmer word across two lines. A line break may only fall at a "
+    "real word boundary (or an existing space / punctuation). Keeping whole words "
+    "together matters more than any other rule.\n"
+    "2. Keep each line at or under the bubble's max_chars budget so the text stays "
+    "big; use as FEW lines as that allows.\n"
+    "3. Make the lines SYMMETRICAL — as close to equal length as possible — for a "
+    "balanced, tidy look (avoid a long line followed by one short orphan word).\n"
+    "4. Prefer breaks that keep a phrase or grammatical unit intact.\n"
     "Keep EVERY character exactly — do not translate, add, remove, or reorder "
     "anything; only choose where the newlines go. Return ONLY a JSON object "
-    "mapping each bubble number (as a string) to an array of line strings. "
+    "mapping each bubble number (as a string) to an array of line strings.\n"
     "Bubbles:\n"
 )
 
