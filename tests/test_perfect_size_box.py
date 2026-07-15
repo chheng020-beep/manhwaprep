@@ -88,3 +88,25 @@ def test_resize_refits_a_fitted_box():
     it.w, it.h = 600, 400
     it.apply_perfect_size()
     assert it.max_size > s1        # bigger box -> bigger font
+
+
+def test_fitted_box_renders_one_visual_line_per_fitted_line():
+    """RENDER-level regression: apply_perfect_size() stores fitted lines joined
+    by '\\n' in self.text, but QTextLayout does NOT treat '\\n' as a line break
+    (unlike QTextDocument). Combined with NoWrap for fitted boxes, this used to
+    collapse a multi-line fit into ONE visual line that overflowed the box
+    horizontally instead of wrapping. This test renders the actual QTextLayout
+    (as the fill/outline painters do) and asserts the line count the layout
+    itself produces, not just that '\\n' appears in the stored text."""
+    it = TextBoxItem(
+        1,
+        "លោកអ្នកទាំងអស់គ្នាសូមអរគុណដែលបានចូលរួមក្នុងកម្មវិធីនេះ",
+        0, 0, 220, 260,
+    )
+    it.raw_text = it.text
+    it.apply_perfect_size()
+    expected_lines = it.text.count("\n") + 1
+    assert expected_lines >= 3   # sanity: the fit actually produced multiple lines
+
+    layout, _ = it._text_layout()
+    assert layout.lineCount() == expected_lines

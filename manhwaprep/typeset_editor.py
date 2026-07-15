@@ -353,7 +353,17 @@ class TextBoxItem(QGraphicsItem):
     def _text_layout(self):
         """QTextLayout with line_spacing applied. Returns (layout, total_height)."""
         from PySide6.QtGui import QTextLayout, QTextOption
-        layout = QTextLayout(self._plain_text, self.font)
+        src = self._plain_text
+        if self.fitted:
+            # QTextLayout (unlike QTextDocument) does NOT treat "\n" as a line
+            # break, and fitted boxes render NoWrap -- so the "\n"-joined lines
+            # apply_perfect_size() stores in self.text would otherwise collapse
+            # into one overflowing visual line. U+2028 LINE SEPARATOR *is* a
+            # break QTextLayout's createLine() loop honors, giving one visual
+            # line per fitted line. self.text itself stays "\n"-joined (human
+            # -readable/editable/saveable); only the layout's input is converted.
+            src = src.replace("\n", " ")
+        layout = QTextLayout(src, self.font)
         opt = QTextOption(self.align & Qt.AlignHorizontal_Mask)
         opt.setWrapMode(QTextOption.NoWrap if self.fitted
                         else QTextOption.WrapAtWordBoundaryOrAnywhere)
