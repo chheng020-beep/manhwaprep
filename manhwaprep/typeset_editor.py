@@ -1788,16 +1788,6 @@ class TypesetEditor(QWidget):
         self.text_edit.setFont(QFont(khmer_font(), 15))
         self.text_edit.textChanged.connect(self._text_changed)
         tg.addWidget(self.text_edit)
-        self.perfect_btn = QPushButton("✨ Perfect size (fill bubble)")
-        self.perfect_btn.setToolTip(
-            "Auto-size the selected text box(es) to fill their bubble, with clean "
-            "Khmer word-boundary line breaks. With nothing selected, sizes every "
-            "box on this canvas.")
-        self.perfect_btn.setStyleSheet(
-            "QPushButton{background:#2d7ff9;color:white;border-radius:6px;"
-            "padding:6px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
-        self.perfect_btn.clicked.connect(self._perfect_size_clicked)
-        tg.addWidget(self.perfect_btn)
         self.recent_fonts = QComboBox()
         self.recent_fonts.setToolTip("Recently used fonts")
         self.recent_fonts.activated.connect(self._recent_font_picked)
@@ -1933,6 +1923,16 @@ class TypesetEditor(QWidget):
         self.paste_btn.clicked.connect(self._paste)
         krow.addWidget(self.copy_btn); krow.addWidget(self.paste_btn)
         ig.addLayout(krow)
+        self.perfect_btn = QPushButton("3️⃣ ✨ Perfect size (fill bubbles)")
+        self.perfect_btn.setToolTip(
+            "Auto-size text to fill the bubble, with clean Khmer word-boundary "
+            "line breaks. Sizes the selected box(es); with nothing selected, "
+            "sizes every box on this canvas.")
+        self.perfect_btn.setStyleSheet(
+            "QPushButton{background:#2d7ff9;color:white;border-radius:6px;"
+            "padding:7px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
+        self.perfect_btn.clicked.connect(self._perfect_size_clicked)
+        ig.addWidget(self.perfect_btn)
         ig.addWidget(QLabel("SFX library — click to place, right-click to delete:"))
         self.lib = QListWidget()
         self.lib.setViewMode(QListWidget.IconMode)
