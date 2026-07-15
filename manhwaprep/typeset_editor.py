@@ -75,6 +75,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import nsfw
+from . import perfect_size
 
 # Khmer has no spaces between words, so word-wrap alone leaves it as one huge
 # unbreakable line. WrapAtWordBoundaryOrAnywhere wraps English at spaces and
@@ -266,6 +267,8 @@ class TextBoxItem(QGraphicsItem):
         super().__init__()
         self.n = n
         self.text = text
+        self.raw_text = text     # unbroken source; fit() re-wraps from this
+        self.fitted = False      # True once perfect-sized: holds target w x h
         self.w = float(w)
         self.h = float(h)
         self.font = QFont(khmer_font())
@@ -297,12 +300,28 @@ class TextBoxItem(QGraphicsItem):
         self._start = None
         self._refit()
 
+    def apply_perfect_size(self):
+        """Fill this box: pick the largest font + Khmer word-break layout that fits
+        self.w x self.h, from self.raw_text. Holds the box size (no auto-grow)."""
+        src = (self.raw_text or self.text or "").strip()
+        if not src:
+            return
+        size, lines = perfect_size.fit(src, self.w, self.h, self.font.family())
+        self.max_size = size
+        self.font.setPointSizeF(size)
+        self.text = "\n".join(lines) if lines else src
+        self.fitted = True
+        self._px_key = None       # invalidate pixmap cache
+        self.update()
+
     def _refit(self, top=None, bottom=None, min_h=None):
         """Canva-style AUTO-HEIGHT: keep the font fixed (max_size) and grow the
         box height to fit the wrapped text at the current width — so narrowing the
         width wraps the text and makes the box TALLER; the font never shrinks.
         `top`/`bottom` anchor that edge while it grows; `min_h` lets a top/bottom
         drag make the frame taller than the text."""
+        if self.fitted:
+            return            # a perfect-sized box holds its target w x h
         self.font.setPointSizeF(
             max(self.FONT_MIN, min(self.max_size, self.FONT_MAX)))
         cy = self.y() + self.h / 2
@@ -334,7 +353,8 @@ class TextBoxItem(QGraphicsItem):
         from PySide6.QtGui import QTextLayout, QTextOption
         layout = QTextLayout(self._plain_text, self.font)
         opt = QTextOption(self.align & Qt.AlignHorizontal_Mask)
-        opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        opt.setWrapMode(QTextOption.NoWrap if self.fitted
+                        else QTextOption.WrapAtWordBoundaryOrAnywhere)
         layout.setTextOption(opt)
         layout.beginLayout()
         fm = QFontMetricsF(self.font)
@@ -797,6 +817,8 @@ class TextBoxItem(QGraphicsItem):
             "line_spacing": self.line_spacing,
             "effect": self.effect,
             "effect_color": self.effect_color,
+            "fitted": self.fitted,
+            "raw_text": self.raw_text,
         }
 
 
@@ -2012,6 +2034,8 @@ class TypesetEditor(QWidget):
                 self.images.append(im)
                 continue
             it = TextBoxItem(d["n"], d["text"], d["x"], d["y"], d["w"], d["h"])
+            it.raw_text = d.get("raw_text", d["text"])
+            it.fitted = bool(d.get("fitted", False))
             it.font = QFont(d["font"])
             it.max_size = float(d["size"])
             it.font.setBold(d.get("bold", False))
