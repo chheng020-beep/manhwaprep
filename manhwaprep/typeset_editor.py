@@ -1923,16 +1923,23 @@ class TypesetEditor(QWidget):
         self.paste_btn.clicked.connect(self._paste)
         krow.addWidget(self.copy_btn); krow.addWidget(self.paste_btn)
         ig.addLayout(krow)
-        self.perfect_btn = QPushButton("3️⃣ ✨ Perfect size (fill bubbles)")
-        self.perfect_btn.setToolTip(
-            "Auto-size text to fill the bubble, with clean Khmer word-boundary "
-            "line breaks. Sizes the selected box(es); with nothing selected, "
-            "sizes every box on this canvas.")
-        self.perfect_btn.setStyleSheet(
-            "QPushButton{background:#2d7ff9;color:white;border-radius:6px;"
-            "padding:7px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
-        self.perfect_btn.clicked.connect(self._perfect_size_clicked)
-        ig.addWidget(self.perfect_btn)
+        ig.addWidget(QLabel("3️⃣ ✨ Perfect size — fill bubble(s):"))
+        prow = QHBoxLayout()
+        self.perfect_one_btn = QPushButton("✨ This box")
+        self.perfect_one_btn.setToolTip(
+            "Fill the SELECTED text box to its bubble, with clean Khmer "
+            "word-boundary line breaks.")
+        self.perfect_one_btn.clicked.connect(lambda: self._perfect_size("selected"))
+        self.perfect_all_btn = QPushButton("✨ All boxes")
+        self.perfect_all_btn.setToolTip(
+            "Fill EVERY text box on this canvas.")
+        self.perfect_all_btn.clicked.connect(lambda: self._perfect_size("all"))
+        for _b in (self.perfect_one_btn, self.perfect_all_btn):
+            _b.setStyleSheet(
+                "QPushButton{background:#2d7ff9;color:white;border-radius:6px;"
+                "padding:7px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
+            prow.addWidget(_b)
+        ig.addLayout(prow)
         ig.addWidget(QLabel("SFX library — click to place, right-click to delete:"))
         self.lib = QListWidget()
         self.lib.setViewMode(QListWidget.IconMode)
@@ -2198,14 +2205,18 @@ class TypesetEditor(QWidget):
             it.update()
         self._record_if_changed()
 
-    def _perfect_size_clicked(self):
-        """Manual trigger: fill the selected text box(es) — or every box on this
-        canvas if none are selected — so the effect is unmistakable on click."""
-        boxes = [it for it in self._selected() if isinstance(it, TextBoxItem)]
-        scope = "selected"
-        if not boxes:
+    def _perfect_size(self, scope="selected"):
+        """Manual trigger: fill text box(es) to their bubbles. scope="selected"
+        does the selected box(es); scope="all" does every box on this canvas."""
+        if scope == "all":
             boxes = [it for it in self.items if isinstance(it, TextBoxItem)]
-            scope = "all"
+        else:
+            boxes = [it for it in self._selected() if isinstance(it, TextBoxItem)]
+            if not boxes:
+                QMessageBox.information(
+                    self, "Perfect size",
+                    "Select a text box first — or use “✨ All boxes”.")
+                return
         n = 0
         for it in boxes:
             if not (it.raw_text or it.text or "").strip():
@@ -2217,9 +2228,7 @@ class TypesetEditor(QWidget):
             n += 1
         self._record_if_changed()
         QMessageBox.information(
-            self, "Perfect size",
-            f"Sized {n} text box(es) to fill their bubbles "
-            f"({scope}).")
+            self, "Perfect size", f"Sized {n} text box(es) to fill their bubbles.")
 
     def _refresh_recent_fonts(self):
         from . import recents
