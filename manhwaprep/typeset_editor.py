@@ -454,17 +454,16 @@ class TextBoxItem(QGraphicsItem):
         mp.setFont(self.font)
         mp.setPen(Qt.white)
         mp.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-        if self.line_spacing == 1.0:
-            mp.drawText(QRectF(0, 0, iw, ih), flags, self._plain_text or "")
-        else:
-            # match the spaced layout used by the fill / outline passes
-            layout, th = self._text_layout()
-            y_off = 0.0
-            if int(self.align) & int(Qt.AlignVCenter):
-                y_off = (ih - th) / 2
-            elif int(self.align) & int(Qt.AlignBottom):
-                y_off = ih - th
-            layout.draw(mp, QPointF(0, y_off))
+        # Match the exact layout the fill / outline passes use (see _draw_text_fill):
+        # always the shared QTextLayout, never drawText, so the gradient mask lines
+        # up with the outline stroke.
+        layout, th = self._text_layout()
+        y_off = 0.0
+        if int(self.align) & int(Qt.AlignVCenter):
+            y_off = (ih - th) / 2
+        elif int(self.align) & int(Qt.AlignBottom):
+            y_off = ih - th
+        layout.draw(mp, QPointF(0, y_off))
         mp.end()
         # 2. Fill gradient then punch out text shape with DestinationIn
         # Format_ARGB32 (non-premultiplied) for reliable compositing on all platforms
@@ -484,12 +483,12 @@ class TextBoxItem(QGraphicsItem):
         runs = re.split(r'(\*\*.+?\*\*)', self.text or '', flags=re.DOTALL)
         has_bold = any(s.startswith('**') for s in runs)
 
-        if not has_bold and self.line_spacing == 1.0:
-            p.setPen(self.fill)
-            p.drawText(r, flags, self.text or "")
-            return
-
-        # Use QTextLayout for custom line spacing and/or per-run bold
+        # Always render through the shared QTextLayout — never QPainter.drawText.
+        # The outline/hollow stroke is built from this same layout's glyph runs, and
+        # drawText wraps and (crucially) spaces lines by the font's natural line
+        # height, while the layout steps by fm.lineSpacing(); on fonts where those
+        # differ the two walk apart down the lines and the halo detaches from the
+        # fill (worst on narrow, heavily-wrapped Khmer). One layout ⇒ they can't.
         from PySide6.QtGui import QTextLayout, QTextOption
         layout, total_h = self._text_layout()
         y_off = 0.0

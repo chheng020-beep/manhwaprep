@@ -3,12 +3,12 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 sys.path.insert(0, "/Users/leapheakuoch/ManhwaPrep")
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QFontMetricsF
+from PySide6.QtGui import QFontMetricsF, QImage, QPainter, QColor
 from PySide6.QtCore import Qt, QRectF
 
 _app = QApplication.instance() or QApplication([])
 
-from manhwaprep.typeset_editor import TextBoxItem
+from manhwaprep.typeset_editor import TextBoxItem, WRAP_FLAGS
 
 
 def _long_box():
@@ -67,3 +67,45 @@ def test_shaped_path_is_horizontally_centered_for_centered_text():
 def test_empty_text_has_no_path():
     it = TextBoxItem(1, "", 0, 0, 140, 60)
     assert it._shaped_text_path(_rect(it)) is None
+
+
+def _coverage_mask(it, draw):
+    W, H = int(it.w), int(it.h)
+    m = QImage(W, H, QImage.Format_ARGB32)
+    m.fill(0)
+    p = QPainter(m)
+    p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+    p.setFont(it.font)          # _paint_text_body sets the painter font before drawing
+    draw(p)
+    p.end()
+    return m, W, H
+
+
+def test_fill_and_outline_render_aligned_when_heavily_wrapped():
+    """The fill and the outline stroke must be built from the SAME layout, so
+    they sit on top of each other. They used to diverge: the fill went through
+    QPainter.drawText (spacing lines by the font's natural height) while the
+    outline used QTextLayout (fm.lineSpacing()). On a narrow, many-line Khmer box
+    the two walked apart line by line and the halo detached — the resize bug.
+    Guard: fill and outline glyph coverage overlap heavily (IoU)."""
+    it = TextBoxItem(1, "នាក់ប្រាក់ ១០០ ថង់ និងគ្រិណាត់ ស្ត្រ ៣០០ ឆ្នាំង",
+                     0, 0, 150, 100)
+    it.font.setPointSizeF(34)
+    it.h = 589                  # a tall, narrow box: forces ~9 wrapped lines
+    it.fill = QColor(0, 0, 0)
+    r = _rect(it)
+    mf, W, H = _coverage_mask(
+        it, lambda p: it._draw_text_fill(p, r, int(it.align) | WRAP_FLAGS))
+    mo, _, _ = _coverage_mask(
+        it, lambda p: p.fillPath(it._shaped_text_path(r), QColor(0, 0, 0)))
+
+    inter = union = 0
+    for y in range(H):
+        for x in range(W):
+            a = mf.pixelColor(x, y).alpha() > 20
+            b = mo.pixelColor(x, y).alpha() > 20
+            inter += a and b
+            union += a or b
+    iou = inter / max(1, union)
+    # Aligned overlap sits ~0.8; a drifting outline (the bug) falls far below this.
+    assert iou > 0.7, f"fill/outline drifted apart: IoU={iou:.3f}"
