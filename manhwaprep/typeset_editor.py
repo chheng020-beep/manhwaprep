@@ -1788,6 +1788,16 @@ class TypesetEditor(QWidget):
         self.text_edit.setFont(QFont(khmer_font(), 15))
         self.text_edit.textChanged.connect(self._text_changed)
         tg.addWidget(self.text_edit)
+        self.perfect_btn = QPushButton("✨ Perfect size (fill bubble)")
+        self.perfect_btn.setToolTip(
+            "Auto-size the selected text box(es) to fill their bubble, with clean "
+            "Khmer word-boundary line breaks. With nothing selected, sizes every "
+            "box on this canvas.")
+        self.perfect_btn.setStyleSheet(
+            "QPushButton{background:#2d7ff9;color:white;border-radius:6px;"
+            "padding:6px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
+        self.perfect_btn.clicked.connect(self._perfect_size_clicked)
+        tg.addWidget(self.perfect_btn)
         self.recent_fonts = QComboBox()
         self.recent_fonts.setToolTip("Recently used fonts")
         self.recent_fonts.activated.connect(self._recent_font_picked)
@@ -2187,6 +2197,29 @@ class TypesetEditor(QWidget):
                 it._refit()
             it.update()
         self._record_if_changed()
+
+    def _perfect_size_clicked(self):
+        """Manual trigger: fill the selected text box(es) — or every box on this
+        canvas if none are selected — so the effect is unmistakable on click."""
+        boxes = [it for it in self._selected() if isinstance(it, TextBoxItem)]
+        scope = "selected"
+        if not boxes:
+            boxes = [it for it in self.items if isinstance(it, TextBoxItem)]
+            scope = "all"
+        n = 0
+        for it in boxes:
+            if not (it.raw_text or it.text or "").strip():
+                continue
+            if not it.raw_text:
+                it.raw_text = it.text
+            it.apply_perfect_size()
+            it.update()
+            n += 1
+        self._record_if_changed()
+        QMessageBox.information(
+            self, "Perfect size",
+            f"Sized {n} text box(es) to fill their bubbles "
+            f"({scope}).")
 
     def _refresh_recent_fonts(self):
         from . import recents
