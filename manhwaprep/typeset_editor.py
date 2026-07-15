@@ -2180,6 +2180,10 @@ class TypesetEditor(QWidget):
             it.effect = d.get("effect", "none")
             it.effect_color = d.get("effect_color", "#000000")
             self.scene.addItem(it)
+            # the constructor's _refit() recomputed the height; for a perfect-sized
+            # (fitted) box, restore the SAVED height so it displays at its real size
+            # without needing a re-edit. _refit() then keeps it (fitted early-return).
+            it.h = float(d["h"])
             it._refit()
             if d.get("rot"):
                 it.setTransformOriginPoint(it.w / 2, it.h / 2)
