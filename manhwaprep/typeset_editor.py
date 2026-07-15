@@ -316,38 +316,56 @@ class TextBoxItem(QGraphicsItem):
             return
         fam = self.font.family()
         bold, italic = self.font.bold(), self.font.italic()
-        # Target a big readable size (40, else 35): fix the font, wrap to the box
-        # WIDTH, and grow the box HEIGHT to fit — so the Khmer comes out large
-        # instead of shrinking into a short box. `lines` (from the LLM) are used as
-        # the preferred break points; a line still too wide gets sub-wrapped.
+        # HORIZONTAL bias: keep the font big (40, else 35) and grow the box WIDTH
+        # toward the canvas so the text lays out on as few, as-wide-as-possible
+        # lines — only breaking when a line would exceed that width. Then grow the
+        # HEIGHT to fit. `lines` (from the LLM) are preferred break points.
+        size = perfect_size.PREFER_SIZES[0]
+        target_w = self._horizontal_target_width(size, src)
         chosen = None
         for size in perfect_size.PREFER_SIZES:
             wlines, fits = perfect_size.wrap_at_size(
-                src, self.w, size, fam, bold=bold, italic=italic, prefer_lines=lines)
+                src, target_w, size, fam, bold=bold, italic=italic, prefer_lines=lines)
             if fits:
                 chosen = (size, wlines)
                 break
         if chosen is None:
-            # a single token is too wide even at the smallest preferred size:
-            # shrink to fit the box as a last resort so nothing overflows
             size, wlines = perfect_size.fit(
-                src, self.w, max(self.h, self.w), fam,
+                src, target_w, max(self.h, target_w * 0.6), fam,
                 line_spacing=self.line_spacing, bold=bold, italic=italic)
             chosen = (size, wlines)
         size, wlines = chosen
-        # grow (or shrink) the box height to the text block, keeping the centre
         _f = QFont(fam); _f.setPointSizeF(size); _f.setBold(bold); _f.setItalic(italic)
         need_h = len(wlines) * QFontMetricsF(_f).lineSpacing() * self.line_spacing + 6
+        # resize the box around its current centre (width can grow, height follows)
+        cx = self.x() + self.w / 2
         cy = self.y() + self.h / 2
         self.prepareGeometryChange()
+        self.w = max(24.0, target_w)
         self.h = max(8.0, need_h)
-        self.setY(cy - self.h / 2)
+        self.setPos(cx - self.w / 2, cy - self.h / 2)
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
         self.max_size = size
         self.font.setPointSizeF(size)
         self.text = "\n".join(wlines)
         self.fitted = True
         self._px_key = None       # invalidate pixmap cache
         self.update()
+
+    def _horizontal_target_width(self, size, src=None):
+        """Box width that lets `src` lay out on the fewest, widest lines at `size`,
+        capped by the canvas so it never spans the whole page. Grows the box wider
+        (never narrower than it is) for a horizontal, large-text look."""
+        import math
+        src = src or (self.raw_text or self.text or "")
+        f = QFont(self.font.family()); f.setPointSizeF(size)
+        f.setBold(self.font.bold()); f.setItalic(self.font.italic())
+        full = QFontMetricsF(f).horizontalAdvance(src.replace("\n", " "))
+        canvas_w = self.scene().sceneRect().width() if self.scene() else 720.0
+        cap = min(canvas_w * 0.92, 660.0)          # don't span more than this
+        avail = 0.88                                # 6% padding each side
+        n = max(1, math.ceil(full / (cap * avail)))  # fewest lines under the cap
+        return max(self.w, min(cap, (full / n) / avail * 1.06))
 
     def _refit(self, top=None, bottom=None, min_h=None):
         """Canva-style AUTO-HEIGHT: keep the font fixed (max_size) and grow the
@@ -2272,10 +2290,11 @@ class TypesetEditor(QWidget):
         sample = "កខគឃងចឆជឈញ"
 
         def _max_chars(it):
+            tw = it._horizontal_target_width(target, it.raw_text or it.text)
             f = QFont(it.font.family()); f.setPointSizeF(target)
             f.setBold(it.font.bold()); f.setItalic(it.font.italic())
             avg = QFontMetricsF(f).horizontalAdvance(sample) / len(sample)
-            return max(4, int((it.w * 0.88) / max(1.0, avg)))
+            return max(4, int((tw * 0.88) / max(1.0, avg)))
 
         items = [{"n": it.n, "text": (it.raw_text or it.text), "w": it.w, "h": it.h,
                   "max_chars": _max_chars(it)} for it in boxes]
