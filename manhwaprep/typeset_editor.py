@@ -2163,6 +2163,8 @@ class TypesetEditor(QWidget):
             it.text = self.text_edit.toPlainText()
             it.raw_text = it.text
             it.apply_perfect_size()
+            if not it.fitted:
+                it._refit()
             it.update()
         self._record_if_changed()
 

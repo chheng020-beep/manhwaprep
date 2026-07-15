@@ -53,6 +53,32 @@ def test_fitted_box_restores_font_size_after_reload():
     assert abs(reloaded.font.pointSizeF() - saved_size) < 0.01
 
 
+def test_nonfitted_box_still_shrinks_when_text_cleared():
+    """Regression for the side-panel text-commit handler (_text_changed):
+    apply_perfect_size() is a no-op on empty text (it returns before setting
+    `fitted`), so clearing the text of a box that was never perfect-size-fitted
+    must fall back to _refit() to shrink the box height — mirroring the exact
+    guarded sequence `apply_perfect_size(); if not it.fitted: it._refit()`
+    used at both call sites in typeset_editor.py."""
+    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណនិងសូមជូនពរ", 0, 0, 300, 200)
+    it.raw_text = it.text
+    it._refit()               # grows the box to fit the long, non-fitted text
+    tall_h = it.h
+    assert it.fitted is False  # never called apply_perfect_size -> never fitted
+
+    # Simulate the side-panel commit: clear the text, then run the guarded
+    # sequence exactly as _text_changed/_commit_inline do.
+    it.text = ""
+    it.raw_text = it.text
+    it.apply_perfect_size()     # no-op on empty text; must NOT crash or set fitted
+    assert it.fitted is False
+    if not it.fitted:
+        it._refit()
+
+    assert it.h < tall_h       # box shrank back down instead of staying tall
+    assert it.h >= 8.0         # sane minimum height floor (see _refit)
+
+
 def test_resize_refits_a_fitted_box():
     it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 300, 200)
     it.raw_text = it.text
