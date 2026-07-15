@@ -266,3 +266,64 @@ def wrap_at_size(text, box_w, size, font_family, margin=0.06,
         if any(fm.horizontalAdvance(l) > aw + 1 for l in lines):
             fits = False
     return (out or [text]), fits
+
+
+def _balanced_lines(tokens, n, fm):
+    """Partition `tokens` (whole words, in order) into at most n lines so the
+    WIDEST line is as narrow as possible — the most balanced/symmetrical split.
+    Binary-searches the minimal feasible max-width, then greedy-fills to it."""
+    adv = [fm.horizontalAdvance(t) for t in tokens]
+    if not adv:
+        return [""]
+    widest, total = max(adv), sum(adv)
+
+    def lines_at(w):
+        out, cur, cw = [], "", 0.0
+        for t, a in zip(tokens, adv):
+            if cur and cw + a > w:
+                out.append(cur); cur, cw = t, a
+            else:
+                cur += t; cw += a
+        if cur:
+            out.append(cur)
+        return out
+
+    lo, hi = widest, max(widest, total)
+    while lo < hi:
+        mid = (lo + hi) / 2
+        if len(lines_at(mid)) <= n:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lines_at(lo)
+
+
+def fit_balanced(text, box_w, box_h, font_family, margin=0.06, size_min=6.0,
+                 size_max=None, line_spacing: float = 1.0,
+                 bold: bool = False, italic: bool = False, max_lines: int = 14):
+    """Fill box_w x box_h with the largest font whose lines are SYMMETRICAL
+    (balanced widths) and never split a Khmer word. Tries each line count, picks
+    the one that yields the biggest font. Returns (size, lines)."""
+    if size_max is None:
+        size_max = PREFER_SIZES[0]
+    tokens = [t for t in segment(text) if t.strip()]
+    if not tokens:
+        return size_min, []
+    REF = 100.0
+    f = QFont(font_family); f.setPointSizeF(REF); f.setBold(bold); f.setItalic(italic)
+    fm = QFontMetricsF(f)
+    aw, ah = box_w * (1 - 2 * margin), box_h * (1 - 2 * margin)
+    lh = fm.lineSpacing() * line_spacing
+    best = None
+    prev_lines = None
+    for n in range(1, max_lines + 1):
+        lines = _balanced_lines(tokens, n, fm)
+        if lines == prev_lines:      # can't split further (fewer real lines than n)
+            continue
+        prev_lines = lines
+        maxw = max(fm.horizontalAdvance(l) for l in lines) or 1.0
+        s = min(size_max, REF * aw / maxw, REF * ah / (len(lines) * lh))
+        if best is None or s > best[0]:
+            best = (s, lines)
+    size, lines = best
+    return max(size_min, round(size, 1)), lines

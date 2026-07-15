@@ -314,23 +314,54 @@ class TextBoxItem(QGraphicsItem):
             return
         fam = self.font.family()
         bold, italic = self.font.bold(), self.font.italic()
-        size = self._max_size_no_chop(self.w, src)
-        wlines, _ = perfect_size.wrap_at_size(
-            src, self.w, size, fam, bold=bold, italic=italic, prefer_lines=lines)
-        if not lines:
-            # symmetrical local breaks (the LLM already balances the lines it gives)
+        hi, lo = perfect_size.PREFER_SIZES         # (40, 35) — 35 is the floor
+
+        # LLM path: it already broke the text into the fewest SYMMETRICAL whole-word
+        # lines (it reads Khmer, so it never chops a word). Just SIZE those lines to
+        # fill the box, 35 floor / 40 cap; grow the height if 35 still doesn't fit.
+        if lines:
+            wlines = [str(l) for l in lines if str(l).strip()]
+            size = perfect_size.fit_lines(
+                wlines, self.w, self.h, fam, size_min=lo, size_max=hi,
+                line_spacing=self.line_spacing, bold=bold, italic=italic)
             _f = QFont(fam); _f.setPointSizeF(size)
             _f.setBold(bold); _f.setItalic(italic)
-            avail = self.w * (1 - 2 * 0.06)
-            wlines = perfect_size.balance_lines(
-                perfect_size.segment(src), len(wlines), avail, QFontMetricsF(_f))
+            need_h = len(wlines) * QFontMetricsF(_f).lineSpacing() * self.line_spacing + 6
+            cy = self.y() + self.h / 2
+            self.prepareGeometryChange()
+            self.h = max(self.h, need_h)          # grow down if 35 needs more room
+            self.setY(cy - self.h / 2)
+            self.max_size = size
+            self.font.setPointSizeF(size)
+            self.text = "\n".join(wlines)
+            self.fitted = True
+            self._px_key = None
+            self.update()
+            return
+
+        # Font: 40 if every Khmer word fits the box width at 40, else the 35 floor.
+        size = hi if self._words_fit(self.w, src, hi) else lo
+        tw = self.w
+        if not self._words_fit(tw, src, size):
+            # a single word is wider than the box even at 35: widen just enough
+            # (capped to the canvas) so the word is never chopped
+            tw = self._min_width_for_words(src, size)
         _f = QFont(fam); _f.setPointSizeF(size); _f.setBold(bold); _f.setItalic(italic)
-        need_h = len(wlines) * QFontMetricsF(_f).lineSpacing() * self.line_spacing + 6
-        # width stays put; only the height grows, around the current centre
+        fm = QFontMetricsF(_f)
+        toks = [t for t in perfect_size.segment(src) if t.strip()]
+        # fill each line HORIZONTALLY (greedy) to get the fewest lines, then rebalance
+        # into that many SYMMETRICAL lines (equal widths) — never splitting a word.
+        n = max(1, len(perfect_size._wrap(toks, tw * (1 - 2 * 0.06), fm)))
+        wlines = perfect_size._balanced_lines(toks, n, fm)
+        need_h = len(wlines) * fm.lineSpacing() * self.line_spacing + 6
+        # grow to fit (width only when a word forced it); height follows the text
+        cx = self.x() + self.w / 2
         cy = self.y() + self.h / 2
         self.prepareGeometryChange()
+        self.w = max(24.0, tw)
         self.h = max(8.0, need_h)
-        self.setY(cy - self.h / 2)
+        self.setPos(cx - self.w / 2, cy - self.h / 2)
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
         self.max_size = size
         self.font.setPointSizeF(size)
         self.text = "\n".join(wlines)
@@ -338,21 +369,28 @@ class TextBoxItem(QGraphicsItem):
         self._px_key = None       # invalidate pixmap cache
         self.update()
 
-    def _max_size_no_chop(self, box_w, src, cap=None, floor=12.0):
-        """Largest font size (<= cap, default 40) at which the WIDEST Khmer word in
-        `src` still fits box_w — so wrapping never has to split a word and the text
-        never overflows the box width."""
-        cap = perfect_size.PREFER_SIZES[0] if cap is None else cap
-        f = QFont(self.font.family()); f.setPointSizeF(cap)
+    def _words_fit(self, box_w, src, size):
+        """True if every Khmer word in `src` fits box_w at `size` (no word would
+        need to be chopped)."""
+        f = QFont(self.font.family()); f.setPointSizeF(size)
+        f.setBold(self.font.bold()); f.setItalic(self.font.italic())
+        fm = QFontMetricsF(f)
+        toks = [t for t in perfect_size.segment((src or "").replace("\n", " "))
+                if t.strip()]
+        widest = max((fm.horizontalAdvance(t) for t in toks), default=0.0)
+        return widest <= box_w * (1 - 2 * 0.06)
+
+    def _min_width_for_words(self, src, size):
+        """Smallest box width (capped to the canvas) that fits the widest word at
+        `size`, so no word is ever split."""
+        f = QFont(self.font.family()); f.setPointSizeF(size)
         f.setBold(self.font.bold()); f.setItalic(self.font.italic())
         fm = QFontMetricsF(f)
         toks = [t for t in perfect_size.segment((src or "").replace("\n", " "))
                 if t.strip()]
         widest = max((fm.horizontalAdvance(t) for t in toks), default=1.0)
-        avail = box_w * (1 - 2 * 0.06)
-        if widest <= avail:
-            return cap
-        return max(floor, round(cap * avail / widest, 1))
+        canvas_w = self.scene().sceneRect().width() if self.scene() else 720.0
+        return min(canvas_w * 0.95, widest / (1 - 2 * 0.06) + 8)
 
     def _refit(self, top=None, bottom=None, min_h=None):
         """Canva-style AUTO-HEIGHT: keep the font fixed (max_size) and grow the
@@ -1967,9 +2005,9 @@ class TypesetEditor(QWidget):
             "Fill the SELECTED text box to its bubble, with clean Khmer "
             "word-boundary line breaks.")
         self.perfect_one_btn.clicked.connect(lambda: self._perfect_size("selected"))
-        self.perfect_all_btn = QPushButton("✨ All boxes")
+        self.perfect_all_btn = QPushButton("✨ All boxes (chapter)")
         self.perfect_all_btn.setToolTip(
-            "Fill EVERY text box on this canvas.")
+            "Fill EVERY text box on EVERY canvas of the chapter.")
         self.perfect_all_btn.clicked.connect(lambda: self._perfect_size("all"))
         for _b in (self.perfect_one_btn, self.perfect_all_btn):
             _b.setStyleSheet(
@@ -1977,10 +2015,10 @@ class TypesetEditor(QWidget):
                 "padding:7px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
             prow.addWidget(_b)
         ig.addLayout(prow)
-        self.ai_fit_btn = QPushButton("🤖 AI fit this canvas (OpenRouter)")
+        self.ai_fit_btn = QPushButton("🤖 AI fit — whole chapter (OpenRouter)")
         self.ai_fit_btn.setToolTip(
-            "Ask an LLM to choose natural Khmer line breaks for every bubble on "
-            "this canvas, then size each to fill its box. Needs an OpenRouter key "
+            "Ask an LLM to choose symmetrical whole-word Khmer breaks for every bubble "
+            "on EVERY canvas, then size each to fill its box. Needs an OpenRouter key "
             "in ~/ManhwaPrep/openrouter_key.txt. Falls back to local sizing if the "
             "call fails.")
         self.ai_fit_btn.setStyleSheet(
@@ -2253,11 +2291,44 @@ class TypesetEditor(QWidget):
             it.update()
         self._record_if_changed()
 
-    def _ai_fit(self):
-        """Ask the LLM (OpenRouter) for natural Khmer line breaks on every bubble
-        of this canvas, then size each box to fill it. Falls back to local sizing
-        for any bubble the LLM didn't return (or if the whole call fails)."""
+    def _fit_all_canvases(self, break_fn):
+        """Apply perfect-size to every text box on EVERY canvas of the chapter.
+        break_fn(boxes) -> {n: lines} for LLM breaks, or {} for local-only. Returns
+        (total_boxes, ai_broken)."""
         from PySide6.QtWidgets import QApplication
+        self._commit_inline()
+        self._commit_items()
+        cur = self.seg_idx
+        total = broke = 0
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for i in range(len(self.segments)):
+                self.seg_idx = i
+                self._load_segment(i)
+                boxes = [it for it in self.items if isinstance(it, TextBoxItem)
+                         and (it.raw_text or it.text or "").strip()]
+                if not boxes:
+                    continue
+                res = break_fn(boxes) or {}
+                for it in boxes:
+                    it.raw_text = it.raw_text or it.text
+                    it.apply_perfect_size(lines=res.get(it.n))
+                    it.update()
+                    total += 1
+                    if it.n in res:
+                        broke += 1
+                self._commit_items()
+        finally:
+            self.seg_idx = cur
+            self._load_segment(cur)
+            QApplication.restoreOverrideCursor()
+        self._record_if_changed()
+        return total, broke
+
+    def _ai_fit(self):
+        """Ask the LLM (OpenRouter) for symmetrical whole-word Khmer breaks and size
+        every box to fill it — across ALL canvases of the chapter. Falls back to
+        local sizing for any box the LLM skips."""
         from . import llm_break
         if not llm_break.api_key():
             QMessageBox.information(
@@ -2266,59 +2337,47 @@ class TypesetEditor(QWidget):
                 "(one line), then try again.\n\nOptional: put a model id in "
                 "~/ManhwaPrep/openrouter_model.txt (default google/gemini-2.5-flash).")
             return
-        boxes = [it for it in self.items if isinstance(it, TextBoxItem)
-                 and (it.raw_text or it.text or "").strip()]
-        if not boxes:
-            QMessageBox.information(self, "AI fit", "No text boxes on this canvas.")
-            return
-        # how many Khmer chars fit one line at each box's no-chop size, so the LLM
-        # breaks whole words into lines that already fit the box width.
         sample = "កខគឃងចឆជឈញ"
+        floor = perfect_size.PREFER_SIZES[1]
 
         def _max_chars(it):
-            src = it.raw_text or it.text
-            sz = it._max_size_no_chop(it.w, src)
-            f = QFont(it.font.family()); f.setPointSizeF(sz)
+            f = QFont(it.font.family()); f.setPointSizeF(floor)
             f.setBold(it.font.bold()); f.setItalic(it.font.italic())
             avg = QFontMetricsF(f).horizontalAdvance(sample) / len(sample)
             return max(4, int((it.w * 0.88) / max(1.0, avg)))
 
-        items = [{"n": it.n, "text": (it.raw_text or it.text), "w": it.w, "h": it.h,
-                  "max_chars": _max_chars(it)} for it in boxes]
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            result = llm_break.break_bubbles(items) or {}
-        finally:
-            QApplication.restoreOverrideCursor()
-        for it in boxes:
-            it.raw_text = it.raw_text or it.text
-            it.apply_perfect_size(lines=result.get(it.n))  # LLM lines or local
-            it.update()
-        self._record_if_changed()
-        if result:
-            QMessageBox.information(
-                self, "AI fit",
-                f"AI-broke and sized {len(result)}/{len(boxes)} boxes "
-                f"(model: {llm_break.model()}). Any the model skipped were sized "
-                f"locally.")
-        else:
-            QMessageBox.warning(
-                self, "AI fit",
-                "The AI call returned nothing (no network, bad key, or model "
-                "error) — every box was sized locally instead.")
+        def break_fn(boxes):
+            items = [{"n": it.n, "text": (it.raw_text or it.text),
+                      "w": it.w, "h": it.h, "max_chars": _max_chars(it)}
+                     for it in boxes]
+            return llm_break.break_bubbles(items) or {}
+
+        total, broke = self._fit_all_canvases(break_fn)
+        if total == 0:
+            QMessageBox.information(self, "AI fit", "No text boxes in this chapter.")
+            return
+        QMessageBox.information(
+            self, "AI fit",
+            f"AI-broke and sized {broke}/{total} boxes across "
+            f"{len(self.segments)} canvas(es) (model: {llm_break.model()}). "
+            f"The rest were sized locally.")
 
     def _perfect_size(self, scope="selected"):
-        """Manual trigger: fill text box(es) to their bubbles. scope="selected"
-        does the selected box(es); scope="all" does every box on this canvas."""
+        """Fill text box(es). scope="selected" does the selected box(es) on this
+        canvas; scope="all" does every box on EVERY canvas of the chapter."""
         if scope == "all":
-            boxes = [it for it in self.items if isinstance(it, TextBoxItem)]
-        else:
-            boxes = [it for it in self._selected() if isinstance(it, TextBoxItem)]
-            if not boxes:
-                QMessageBox.information(
-                    self, "Perfect size",
-                    "Select a text box first — or use “✨ All boxes”.")
-                return
+            total, _ = self._fit_all_canvases(lambda boxes: {})
+            QMessageBox.information(
+                self, "Perfect size",
+                f"Sized {total} text box(es) across {len(self.segments)} canvas(es)."
+                if total else "No text boxes in this chapter.")
+            return
+        boxes = [it for it in self._selected() if isinstance(it, TextBoxItem)]
+        if not boxes:
+            QMessageBox.information(
+                self, "Perfect size",
+                "Select a text box first — or use “✨ All boxes”.")
+            return
         n = 0
         for it in boxes:
             if not (it.raw_text or it.text or "").strip():
@@ -2330,7 +2389,7 @@ class TypesetEditor(QWidget):
             n += 1
         self._record_if_changed()
         QMessageBox.information(
-            self, "Perfect size", f"Sized {n} text box(es) to fill their bubbles.")
+            self, "Perfect size", f"Sized {n} text box(es).")
 
     def _refresh_recent_fonts(self):
         from . import recents
