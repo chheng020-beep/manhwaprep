@@ -352,6 +352,42 @@ class TextBoxItem(QGraphicsItem):
         layout.endLayout()
         return layout, y
 
+    def _glyph_lines(self):
+        """Per-visual-line ``(segment, x_left, baseline_y)`` using the SAME
+        word-wrap and alignment as the main fill. The outline and hollow glyph
+        paths must reuse this — building glyph paths from a raw ``"\\n"`` split
+        (no wrap) makes them ghost apart from the wrapped fill on any balloon
+        whose text wraps (regressed by the pixmap-cache perf pass; see
+        test_outline_wrap)."""
+        pt = self._plain_text or ""
+        fm = QFontMetricsF(self.font)
+        lh = fm.lineSpacing() * self.line_spacing
+        layout, total_h = self._text_layout()
+        if int(self.align) & int(Qt.AlignVCenter):
+            y_off = (self.h - total_h) / 2
+        elif int(self.align) & int(Qt.AlignBottom):
+            y_off = self.h - total_h
+        else:
+            y_off = 0.0
+        ha = int(self.align) & (int(Qt.AlignLeft) |
+                                int(Qt.AlignHCenter) |
+                                int(Qt.AlignRight))
+        base = fm.ascent() + max(0.0, y_off)  # never start above the box top
+        out = []
+        for i in range(layout.lineCount()):
+            ln = layout.lineAt(i)
+            seg = pt[ln.textStart(): ln.textStart() + ln.textLength()]
+            lw = fm.horizontalAdvance(seg)
+            if ha == int(Qt.AlignHCenter):
+                x0 = (self.w - lw) / 2
+            elif ha == int(Qt.AlignRight):
+                x0 = self.w - lw
+            else:
+                x0 = 0.0
+            out.append((seg, x0, base))
+            base += lh
+        return out
+
     @property
     def _plain_text(self) -> str:
         """Text with **bold** markers stripped (used for outline/effects rendering)."""
@@ -581,48 +617,20 @@ class TextBoxItem(QGraphicsItem):
             ow = max(ow, 6)
         if ow > 0 and pt and eff not in ("hollow",):
             from PySide6.QtGui import QPainterPath as _QPP
-            fm = QFontMetricsF(self.font)
-            lh = fm.lineSpacing() * self.line_spacing
-            total_h = fm.boundingRect(
-                QRectF(0, 0, self.w, 1e7), flags, pt).height()
-            if int(self.align) & int(Qt.AlignVCenter):
-                y0 = (self.h - total_h) / 2 + fm.ascent()
-            elif int(self.align) & int(Qt.AlignBottom):
-                y0 = self.h - total_h + fm.ascent()
-            else:
-                y0 = fm.ascent()
-            y0 = max(fm.ascent(), y0)
             path = _QPP()
-            ha = int(self.align) & (int(Qt.AlignLeft) |
-                                    int(Qt.AlignHCenter) |
-                                    int(Qt.AlignRight))
-            for line in (pt or "").split("\n") or [""]:
-                lw = fm.horizontalAdvance(line)
-                x0 = ((self.w - lw) / 2 if ha == int(Qt.AlignHCenter)
-                      else (self.w - lw if ha == int(Qt.AlignRight) else 0.0))
-                path.addText(x0, y0, self.font, line)
-                y0 += lh
+            for seg, x0, base in self._glyph_lines():
+                if seg:
+                    path.addText(x0, base, self.font, seg)
             stroke_pen = QPen(outline_pen_color, ow * 2,
                               Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             p.strokePath(path, stroke_pen)
 
         # ── Main text fill ─────────────────────────────────────────────────
         if eff == "hollow" and pt:
-            fm = QFontMetricsF(self.font)
-            lh = fm.lineSpacing() * self.line_spacing
-            total_h = fm.boundingRect(
-                QRectF(0, 0, self.w, 1e7), flags, pt).height()
-            y0 = max(fm.ascent(), (self.h - total_h) / 2 + fm.ascent())
             path = QPainterPath()
-            ha = int(self.align) & (int(Qt.AlignLeft) |
-                                    int(Qt.AlignHCenter) |
-                                    int(Qt.AlignRight))
-            for line in (pt or "").split("\n") or [""]:
-                lw = fm.horizontalAdvance(line)
-                x0 = ((self.w - lw) / 2 if ha == int(Qt.AlignHCenter)
-                      else (self.w - lw if ha == int(Qt.AlignRight) else 0.0))
-                path.addText(x0, y0, self.font, line)
-                y0 += lh
+            for seg, x0, base in self._glyph_lines():
+                if seg:
+                    path.addText(x0, base, self.font, seg)
             pen = QPen(self.fill, max(1, ow)); pen.setJoinStyle(Qt.RoundJoin)
             p.strokePath(path, pen)
         elif self.gradient_colors:
