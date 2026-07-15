@@ -306,7 +306,10 @@ class TextBoxItem(QGraphicsItem):
         src = (self.raw_text or self.text or "").strip()
         if not src:
             return
-        size, lines = perfect_size.fit(src, self.w, self.h, self.font.family())
+        size, lines = perfect_size.fit(
+            src, self.w, self.h, self.font.family(),
+            line_spacing=self.line_spacing,
+            bold=self.font.bold(), italic=self.font.italic())
         self.max_size = size
         self.font.setPointSizeF(size)
         self.text = "\n".join(lines) if lines else src
@@ -323,6 +326,13 @@ class TextBoxItem(QGraphicsItem):
         if self.fitted:
             self.font.setPointSizeF(
                 max(self.FONT_MIN, min(self.max_size, self.FONT_MAX)))
+            if min_h is not None:
+                self.prepareGeometryChange()
+                self.h = max(8.0, min_h)
+            if top is not None:
+                self.setY(top)
+            elif bottom is not None:
+                self.setY(bottom - self.h)
             return            # a perfect-sized box holds its target w x h
         self.font.setPointSizeF(
             max(self.FONT_MIN, min(self.max_size, self.FONT_MAX)))

@@ -175,16 +175,19 @@ def balance_lines(tokens, n_lines, avail_w, fm):
     return lines
 
 
-def fit(text, box_w, box_h, font_family, margin=0.06, size_min=6.0, size_max=200.0):
+def fit(text, box_w, box_h, font_family, margin=0.06, size_min=6.0, size_max=200.0,
+        line_spacing: float = 1.0, bold: bool = False, italic: bool = False):
     tokens = segment(text)
     if not "".join(tokens).strip():
         return size_min, []
 
     def feasible(size, m):
-        f = QFont(font_family); f.setPointSizeF(size); fm = QFontMetricsF(f)
+        f = QFont(font_family); f.setPointSizeF(size)
+        f.setBold(bold); f.setItalic(italic)
+        fm = QFontMetricsF(f)
         aw, ah = box_w * (1 - 2 * m), box_h * (1 - 2 * m)
         lines = _wrap(tokens, aw, fm)
-        ok = len(lines) * fm.lineSpacing() <= ah and \
+        ok = len(lines) * fm.lineSpacing() * line_spacing <= ah and \
             all(fm.horizontalAdvance(l) <= aw for l in lines)
         return ok, lines, fm, aw
 

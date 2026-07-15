@@ -44,3 +44,26 @@ def test_overflow_fallback_returns_min_size_not_crash():
     text = "លោកអ្នកទាំងអស់គ្នា" * 40
     size, lines = ps.fit(text, 60, 60, FAM)
     assert size == 6.0 and lines           # min size, no exception
+
+
+def test_fit_honors_line_spacing():
+    """Regression: fit() used to measure with a hardcoded line-spacing of 1.0,
+    ignoring the box's real line_spacing. A box with 2.0x spacing must not
+    overflow its height -- the chosen size (with spacing accounted for) must
+    fit, and it must differ from the size chosen at spacing=1.0 for a
+    spacing-sensitive (multi-line) box."""
+    text = "លោកអ្នកទាំងអស់គ្នាសូមអរគុណដែលបានចូលរួមក្នុងកម្មវិធីនេះ"
+    box_w, box_h, margin = 250, 260, 0.06
+
+    size1, lines1 = ps.fit(text, box_w, box_h, FAM, margin=margin, line_spacing=1.0)
+    size2, lines2 = ps.fit(text, box_w, box_h, FAM, margin=margin, line_spacing=2.0)
+
+    assert len(lines1) >= 2 and len(lines2) >= 2   # sanity: multi-line, spacing-sensitive
+
+    # the 2.0x-spacing fit must actually respect that spacing in its own box
+    fm2 = _fm(size2)
+    ah = box_h * (1 - 2 * margin)
+    assert len(lines2) * fm2.lineSpacing() * 2.0 <= ah + 1.0
+
+    # accounting for spacing must change the outcome vs. the unspaced fit
+    assert size2 < size1

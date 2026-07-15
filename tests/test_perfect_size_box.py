@@ -27,6 +27,24 @@ def test_fitted_box_refit_is_noop_on_height():
     assert abs(it.h - h) < 1.0
 
 
+def test_fitted_box_height_is_draggable_via_refit_min_h():
+    """Regression: _refit() early-returned for fitted boxes without ever
+    honoring min_h/top/bottom, so a top/bottom edge drag (which calls
+    _refit(min_h=..., top=.../bottom=...)) was inert on a perfect-sized box.
+    The fitted branch must now also apply an explicit min_h before returning."""
+    it = TextBoxItem(1, "លោក", 0, 0, 200, 120)
+    it.raw_text = it.text
+    it.apply_perfect_size()
+    assert it.fitted is True
+
+    it._refit(min_h=400)
+    assert it.h == 400
+
+    # control: without min_h, height stays unchanged (existing no-op behavior)
+    it._refit()
+    assert it.h == 400
+
+
 def test_fitted_box_restores_font_size_after_reload():
     """Regression: a saved fitted box reconstructed via the editor's load path
     (TextBoxItem(...) -> font rebuilt from d["font"] -> _refit()) must restore
