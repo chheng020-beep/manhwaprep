@@ -301,11 +301,25 @@ class TextBoxItem(QGraphicsItem):
         self._refit()
 
     def apply_perfect_size(self):
-        """Fill this box: pick the largest font + Khmer word-break layout that fits
-        self.w x self.h, from self.raw_text. Holds the box size (no auto-grow)."""
+        """Fill this box with the largest font + Khmer word-break layout that fits,
+        from self.raw_text. Holds the box size (no auto-grow).
+
+        Auto-created boxes are the size of the ORIGINAL English text, which is
+        usually SHORT (one or two lines). Khmer is typically longer and taller, so
+        cramming it into that short height forces a tiny font — the "text is too
+        small" complaint. So first grow a short box toward bubble-ish proportions
+        (at least ~0.7x its width tall), symmetrically around its centre, so the
+        Khmer comes out big. A box already that tall (a bubble-sized or hand-drawn
+        box) keeps its height."""
         src = (self.raw_text or self.text or "").strip()
         if not src:
             return
+        floor_h = self.w * 0.7
+        if self.h < floor_h:
+            cy = self.y() + self.h / 2
+            self.prepareGeometryChange()
+            self.h = floor_h
+            self.setY(cy - self.h / 2)
         size, lines = perfect_size.fit(
             src, self.w, self.h, self.font.family(),
             line_spacing=self.line_spacing,
