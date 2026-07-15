@@ -321,6 +321,8 @@ class TextBoxItem(QGraphicsItem):
         `top`/`bottom` anchor that edge while it grows; `min_h` lets a top/bottom
         drag make the frame taller than the text."""
         if self.fitted:
+            self.font.setPointSizeF(
+                max(self.FONT_MIN, min(self.max_size, self.FONT_MAX)))
             return            # a perfect-sized box holds its target w x h
         self.font.setPointSizeF(
             max(self.FONT_MIN, min(self.max_size, self.FONT_MAX)))
