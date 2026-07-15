@@ -3082,10 +3082,16 @@ class TypesetEditor(QWidget):
                     # Detect **name** markers Claude adds for proper nouns.
                     has_name = bool(re.search(r'\*\*[^*]+\*\*', raw))
                     it.text = re.sub(r'\*\*([^*]+)\*\*', r'\1', raw)
+                    it.raw_text = it.text
                     if has_name:
                         it.font.setBold(True)
                         it.font.setItalic(True)
-                    it._refit()
+                    # Auto perfect-size the pasted Khmer to fill the bubble (this is
+                    # the bulk-paste workflow — the main way boxes get their text, so
+                    # it must trigger the fit like the inline/side-panel commits do).
+                    it.apply_perfect_size()
+                    if not it.fitted:
+                        it._refit()
                     it.update()
                     filled += 1
                     hit = True
