@@ -7,15 +7,16 @@ from manhwaprep.typeset_editor import TextBoxItem
 _app = QApplication.instance() or QApplication([])
 
 
-def test_apply_perfect_size_fits_and_marks_fitted():
-    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 300, 200)
-    h0 = it.h
+def test_apply_perfect_size_targets_a_big_size_and_grows_height():
+    import manhwaprep.perfect_size as ps
+    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 300, 60)
     it.raw_text = it.text
     it.apply_perfect_size()
     assert it.fitted is True
-    assert it.max_size > 6.0
-    assert "\n" in it.text or len(it.raw_text) < 12   # multi-line for long text
-    assert abs(it.h - h0) < 1.0        # held its target height (did not auto-grow)
+    # target-size model: font is one of the preferred sizes (40/35), not shrunk
+    assert it.max_size in ps.PREFER_SIZES
+    assert "\n" in it.text                     # long text wraps to several lines
+    assert it.h > 60                           # short box grew to fit the big text
 
 
 def test_fitted_box_refit_is_noop_on_height():
@@ -97,15 +98,18 @@ def test_nonfitted_box_still_shrinks_when_text_cleared():
     assert it.h >= 8.0         # sane minimum height floor (see _refit)
 
 
-def test_resize_refits_a_fitted_box():
+def test_resize_rewraps_a_fitted_box():
+    import manhwaprep.perfect_size as ps
     it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 300, 200)
     it.raw_text = it.text
     it.apply_perfect_size()
-    s1 = it.max_size
-    # simulate a resize to a much bigger box, then the release-time re-fit hook
-    it.w, it.h = 600, 400
+    lines1 = it.text.count("\n") + 1
+    # target-size model: font stays a preferred size; a WIDER box fits more per
+    # line, so it re-wraps into fewer lines (rather than changing the font).
+    it.w = 700
     it.apply_perfect_size()
-    assert it.max_size > s1        # bigger box -> bigger font
+    assert it.max_size in ps.PREFER_SIZES
+    assert it.text.count("\n") + 1 <= lines1
 
 
 def test_fitted_box_renders_one_visual_line_per_fitted_line():

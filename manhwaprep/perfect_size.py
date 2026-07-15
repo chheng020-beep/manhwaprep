@@ -238,3 +238,31 @@ def fit_lines(lines, box_w, box_h, font_family, margin=0.06,
         else:
             hi = mid
     return round(best if best is not None else size_min, 1)
+
+
+# Preferred fixed font sizes, largest first. apply_perfect_size targets these:
+# fix the size, wrap to the box WIDTH, and let the box grow in height — so the
+# text comes out big and readable instead of shrinking to a short box.
+PREFER_SIZES = (40.0, 35.0)
+
+
+def wrap_at_size(text, box_w, size, font_family, margin=0.06,
+                 bold: bool = False, italic: bool = False, prefer_lines=None):
+    """Wrap `text` to fit box_w at a FIXED font size. If prefer_lines is given
+    (e.g. the LLM's chosen breaks), use those as the primary line boundaries and
+    only sub-wrap a preferred line that is still too wide at this size. Returns
+    (lines, fits); fits is False only when a single un-splittable token exceeds
+    the available width (meaning this size is too big for the box)."""
+    f = QFont(font_family); f.setPointSizeF(size)
+    f.setBold(bold); f.setItalic(italic)
+    fm = QFontMetricsF(f)
+    aw = box_w * (1 - 2 * margin)
+    groups = [g for g in (prefer_lines or [text]) if str(g).strip()]
+    out, fits = [], True
+    for g in groups:
+        toks = segment(str(g))
+        lines = _wrap(toks, aw, fm)
+        out.extend(lines)
+        if any(fm.horizontalAdvance(l) > aw + 1 for l in lines):
+            fits = False
+    return (out or [text]), fits

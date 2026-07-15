@@ -314,26 +314,37 @@ class TextBoxItem(QGraphicsItem):
         src = (self.raw_text or self.text or "").strip()
         if not src:
             return
-        floor_h = self.w * 0.7
-        if self.h < floor_h:
-            cy = self.y() + self.h / 2
-            self.prepareGeometryChange()
-            self.h = floor_h
-            self.setY(cy - self.h / 2)
-        if lines:
-            # LLM already chose the breaks — only search the font size for them.
-            size = perfect_size.fit_lines(
-                lines, self.w, self.h, self.font.family(),
-                line_spacing=self.line_spacing,
-                bold=self.font.bold(), italic=self.font.italic())
-        else:
-            size, lines = perfect_size.fit(
-                src, self.w, self.h, self.font.family(),
-                line_spacing=self.line_spacing,
-                bold=self.font.bold(), italic=self.font.italic())
+        fam = self.font.family()
+        bold, italic = self.font.bold(), self.font.italic()
+        # Target a big readable size (40, else 35): fix the font, wrap to the box
+        # WIDTH, and grow the box HEIGHT to fit — so the Khmer comes out large
+        # instead of shrinking into a short box. `lines` (from the LLM) are used as
+        # the preferred break points; a line still too wide gets sub-wrapped.
+        chosen = None
+        for size in perfect_size.PREFER_SIZES:
+            wlines, fits = perfect_size.wrap_at_size(
+                src, self.w, size, fam, bold=bold, italic=italic, prefer_lines=lines)
+            if fits:
+                chosen = (size, wlines)
+                break
+        if chosen is None:
+            # a single token is too wide even at the smallest preferred size:
+            # shrink to fit the box as a last resort so nothing overflows
+            size, wlines = perfect_size.fit(
+                src, self.w, max(self.h, self.w), fam,
+                line_spacing=self.line_spacing, bold=bold, italic=italic)
+            chosen = (size, wlines)
+        size, wlines = chosen
+        # grow (or shrink) the box height to the text block, keeping the centre
+        _f = QFont(fam); _f.setPointSizeF(size); _f.setBold(bold); _f.setItalic(italic)
+        need_h = len(wlines) * QFontMetricsF(_f).lineSpacing() * self.line_spacing + 6
+        cy = self.y() + self.h / 2
+        self.prepareGeometryChange()
+        self.h = max(8.0, need_h)
+        self.setY(cy - self.h / 2)
         self.max_size = size
         self.font.setPointSizeF(size)
-        self.text = "\n".join(lines) if lines else src
+        self.text = "\n".join(wlines)
         self.fitted = True
         self._px_key = None       # invalidate pixmap cache
         self.update()
@@ -2255,8 +2266,19 @@ class TypesetEditor(QWidget):
         if not boxes:
             QMessageBox.information(self, "AI fit", "No text boxes on this canvas.")
             return
-        items = [{"n": it.n, "text": (it.raw_text or it.text), "w": it.w, "h": it.h}
-                 for it in boxes]
+        # how many Khmer chars fit one line at the target size — the LLM breaks to
+        # this budget so its (nice) lines already fit the width at size 40/35.
+        target = perfect_size.PREFER_SIZES[0]
+        sample = "កខគឃងចឆជឈញ"
+
+        def _max_chars(it):
+            f = QFont(it.font.family()); f.setPointSizeF(target)
+            f.setBold(it.font.bold()); f.setItalic(it.font.italic())
+            avg = QFontMetricsF(f).horizontalAdvance(sample) / len(sample)
+            return max(4, int((it.w * 0.88) / max(1.0, avg)))
+
+        items = [{"n": it.n, "text": (it.raw_text or it.text), "w": it.w, "h": it.h,
+                  "max_chars": _max_chars(it)} for it in boxes]
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             result = llm_break.break_bubbles(items) or {}

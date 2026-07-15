@@ -48,27 +48,34 @@ def model() -> str:
 _PROMPT = (
     "You are typesetting Khmer manhwa speech bubbles. For each bubble, split its "
     "Khmer text into display lines. Break ONLY at natural Khmer word / phrase "
-    "boundaries — never inside a word or a coeng (subscript) cluster. Balance the "
-    "lines so the block roughly matches the given pixel box: a wider, shorter box "
-    "wants fewer and longer lines; a narrow, tall box wants more lines. Keep EVERY "
-    "character exactly — do not translate, add, remove, or reorder anything; only "
-    "choose where the newlines go. Return ONLY a JSON object mapping each bubble "
-    'number (as a string) to an array of line strings. Bubbles:\n'
+    "boundaries — never inside a word or a coeng (subscript) cluster. Keep each "
+    "line at or under the bubble's max_chars budget (that's how many Khmer "
+    "characters fit on one line at the display size — staying within it keeps the "
+    "text big); use as FEW lines as the budget allows, balancing their lengths. "
+    "Keep EVERY character exactly — do not translate, add, remove, or reorder "
+    "anything; only choose where the newlines go. Return ONLY a JSON object "
+    "mapping each bubble number (as a string) to an array of line strings. "
+    "Bubbles:\n"
 )
 
 
 def break_bubbles(items, key: str | None = None, mdl: str | None = None,
                   timeout: float = 60.0):
-    """items: [{"n": int, "text": str, "w": float, "h": float}].
+    """items: [{"n": int, "text": str, "w": float, "h": float, "max_chars": int?}].
     Returns {n: [line, ...]} for the bubbles the LLM broke, or None on any failure.
     A bubble is dropped from the result if the LLM changed its characters."""
     key = key or api_key()
     if not key:
         return None
-    payload = [
-        {"n": it["n"], "text": it["text"], "w": round(it["w"]), "h": round(it["h"])}
-        for it in items if (it.get("text") or "").strip()
-    ]
+    payload = []
+    for it in items:
+        if not (it.get("text") or "").strip():
+            continue
+        p = {"n": it["n"], "text": it["text"], "w": round(it["w"]),
+             "h": round(it["h"])}
+        if it.get("max_chars"):
+            p["max_chars"] = int(it["max_chars"])
+        payload.append(p)
     if not payload:
         return None
     body = json.dumps({
