@@ -7,7 +7,60 @@ the largest font size whose word-wrapped, balanced text fills the box. All local
 
 from __future__ import annotations
 
+import os
 import re
+
+_WORDS = None  # memoised dictionary
+
+
+def _default_wordlist_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "assets", "khmer_words.txt")
+
+
+def load_words(path: str | None = None) -> set[str]:
+    global _WORDS
+    if _WORDS is not None and path is None:
+        return _WORDS
+    p = path or _default_wordlist_path()
+    words: set[str] = set()
+    try:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                w = line.strip()
+                if w:
+                    words.add(w)
+    except OSError:
+        words = set()               # missing dict is fine; syllables still work
+    if path is None:
+        _WORDS = words
+    return words
+
+
+def _match_words(run: str, words: set[str]) -> list[str]:
+    """Forward longest-match segmentation of one Khmer run; spans with no match
+    fall back to syllables so output always tiles the run."""
+    if not words:
+        return syllable_split(run)
+    out, i, n = [], 0, len(run)
+    # cap lookahead to the longest dictionary word to keep it simple/fast enough
+    maxlen = max((len(w) for w in words), default=1)
+    while i < n:
+        hit = None
+        for j in range(min(n, i + maxlen), i, -1):
+            if run[i:j] in words:
+                hit = run[i:j]
+                break
+        if hit:
+            out.append(hit)
+            i += len(hit)
+        else:
+            # no word starts here: emit one syllable and advance
+            syl = syllable_split(run[i:])
+            first = syl[0] if syl else run[i]
+            out.append(first)
+            i += len(first)
+    return out
+
 
 # --- Khmer orthographic-syllable (KCC) splitting -------------------------------
 _BASE = r"[ក-អឥ-ឳ]"          # consonant or independent vowel
@@ -51,13 +104,16 @@ def _attach_trailing_space(tokens: list[str], run: str) -> list[str]:
     return tokens
 
 
-def segment(text: str) -> list[str]:
+def segment(text: str, words: set[str] | None = None) -> list[str]:
     """Tile `text` into break-legal tokens; ''.join(segment(text)) == text.
-    Whitespace stays attached to the token it follows so lines rebuild exactly."""
+    Khmer runs are word-segmented against the dictionary (longest-match), with
+    syllable fallback; non-Khmer runs split on whitespace."""
+    if words is None:
+        words = load_words()
     toks: list[str] = []
     for is_khmer, run in _khmer_runs(text):
         if is_khmer:
-            toks.extend(syllable_split(run))        # Task 2 upgrades to words
+            toks.extend(_match_words(run, words))
         else:
             # keep each "word + following spaces" as one token (lossless)
             toks.extend(re.findall(r"\S+\s*|\s+", run))

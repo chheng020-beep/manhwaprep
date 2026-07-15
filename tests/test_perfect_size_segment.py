@@ -23,3 +23,24 @@ def test_segment_tiles_text_exactly():
 def test_segment_splits_non_khmer_on_spaces():
     toks = ps.segment("hello world")
     assert [t.strip() for t in toks if t.strip()] == ["hello", "world"]
+
+
+def test_longest_match_keeps_a_dictionary_word_whole(tmp_path, monkeypatch):
+    wl = tmp_path / "words.txt"
+    wl.write_text("ស្រុក\nខ្មែរ\n", encoding="utf-8")
+    monkeypatch.setattr(ps, "_WORDS", None)          # reset memoised cache
+    words = ps.load_words(str(wl))
+    assert "ស្រុក" in words
+    toks = ps.segment("ស្រុកខ្មែរ", words=words)      # "srok khmer" = two words
+    assert toks == ["ស្រុក", "ខ្មែរ"]                 # not split mid-word
+
+
+def test_segment_falls_back_to_syllables_off_dictionary(tmp_path, monkeypatch):
+    wl = tmp_path / "words.txt"
+    wl.write_text("ខ្មែរ\n", encoding="utf-8")
+    monkeypatch.setattr(ps, "_WORDS", None)
+    words = ps.load_words(str(wl))
+    # unknown run still tiles losslessly via syllables
+    text = "ស្រុក"
+    toks = ps.segment(text, words=words)
+    assert "".join(toks) == text
