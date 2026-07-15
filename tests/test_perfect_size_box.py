@@ -51,3 +51,14 @@ def test_fitted_box_restores_font_size_after_reload():
 
     assert reloaded.fitted is True
     assert abs(reloaded.font.pointSizeF() - saved_size) < 0.01
+
+
+def test_resize_refits_a_fitted_box():
+    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 300, 200)
+    it.raw_text = it.text
+    it.apply_perfect_size()
+    s1 = it.max_size
+    # simulate a resize to a much bigger box, then the release-time re-fit hook
+    it.w, it.h = 600, 400
+    it.apply_perfect_size()
+    assert it.max_size > s1        # bigger box -> bigger font

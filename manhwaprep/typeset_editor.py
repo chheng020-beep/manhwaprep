@@ -791,8 +791,11 @@ class TextBoxItem(QGraphicsItem):
 
     def mouseReleaseEvent(self, e):
         if self._resize:
+            was_resize = self._resize
             self._resize = None
             self._rot_start = None
+            if self.fitted and was_resize != "rot":
+                self.apply_perfect_size()   # re-fill the new bubble size
             e.accept()
         else:
             super().mouseReleaseEvent(e)
@@ -2158,7 +2161,8 @@ class TypesetEditor(QWidget):
     def _text_changed(self):
         for it in self._selected():
             it.text = self.text_edit.toPlainText()
-            it._refit()
+            it.raw_text = it.text
+            it.apply_perfect_size()
             it.update()
         self._record_if_changed()
 
@@ -2353,9 +2357,13 @@ class TypesetEditor(QWidget):
         import shiboken6
         if shiboken6.isValid(it):
             if shiboken6.isValid(proxy) and proxy.widget() is not None:
-                it.text = proxy.widget().toPlainText()
+                new_text = proxy.widget().toPlainText()
+                it.text = new_text
+                it.raw_text = new_text
+                it.apply_perfect_size()
             it._editing = False  # box paints its own (outlined) text again
-            it._refit()
+            if not it.fitted:
+                it._refit()
             it.update()
         if shiboken6.isValid(proxy) and proxy.scene():
             proxy.scene().removeItem(proxy)
