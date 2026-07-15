@@ -25,3 +25,5 @@ bot.log
 recent_projects.json
 .cache/
 crash.log
+openrouter_key.txt
+openrouter_model.txt

@@ -300,7 +300,7 @@ class TextBoxItem(QGraphicsItem):
         self._start = None
         self._refit()
 
-    def apply_perfect_size(self):
+    def apply_perfect_size(self, lines=None):
         """Fill this box with the largest font + Khmer word-break layout that fits,
         from self.raw_text. Holds the box size (no auto-grow).
 
@@ -320,10 +320,17 @@ class TextBoxItem(QGraphicsItem):
             self.prepareGeometryChange()
             self.h = floor_h
             self.setY(cy - self.h / 2)
-        size, lines = perfect_size.fit(
-            src, self.w, self.h, self.font.family(),
-            line_spacing=self.line_spacing,
-            bold=self.font.bold(), italic=self.font.italic())
+        if lines:
+            # LLM already chose the breaks — only search the font size for them.
+            size = perfect_size.fit_lines(
+                lines, self.w, self.h, self.font.family(),
+                line_spacing=self.line_spacing,
+                bold=self.font.bold(), italic=self.font.italic())
+        else:
+            size, lines = perfect_size.fit(
+                src, self.w, self.h, self.font.family(),
+                line_spacing=self.line_spacing,
+                bold=self.font.bold(), italic=self.font.italic())
         self.max_size = size
         self.font.setPointSizeF(size)
         self.text = "\n".join(lines) if lines else src
@@ -1954,6 +1961,17 @@ class TypesetEditor(QWidget):
                 "padding:7px;font-weight:bold;}QPushButton:hover{background:#4a92ff;}")
             prow.addWidget(_b)
         ig.addLayout(prow)
+        self.ai_fit_btn = QPushButton("🤖 AI fit this canvas (OpenRouter)")
+        self.ai_fit_btn.setToolTip(
+            "Ask an LLM to choose natural Khmer line breaks for every bubble on "
+            "this canvas, then size each to fill its box. Needs an OpenRouter key "
+            "in ~/ManhwaPrep/openrouter_key.txt. Falls back to local sizing if the "
+            "call fails.")
+        self.ai_fit_btn.setStyleSheet(
+            "QPushButton{background:#7c3aed;color:white;border-radius:6px;"
+            "padding:7px;font-weight:bold;}QPushButton:hover{background:#8b4df0;}")
+        self.ai_fit_btn.clicked.connect(self._ai_fit)
+        ig.addWidget(self.ai_fit_btn)
         ig.addWidget(QLabel("SFX library — click to place, right-click to delete:"))
         self.lib = QListWidget()
         self.lib.setViewMode(QListWidget.IconMode)
@@ -2218,6 +2236,48 @@ class TypesetEditor(QWidget):
                 it._refit()
             it.update()
         self._record_if_changed()
+
+    def _ai_fit(self):
+        """Ask the LLM (OpenRouter) for natural Khmer line breaks on every bubble
+        of this canvas, then size each box to fill it. Falls back to local sizing
+        for any bubble the LLM didn't return (or if the whole call fails)."""
+        from PySide6.QtWidgets import QApplication
+        from . import llm_break
+        if not llm_break.api_key():
+            QMessageBox.information(
+                self, "AI fit",
+                "Add your OpenRouter key to ~/ManhwaPrep/openrouter_key.txt "
+                "(one line), then try again.\n\nOptional: put a model id in "
+                "~/ManhwaPrep/openrouter_model.txt (default google/gemini-2.5-flash).")
+            return
+        boxes = [it for it in self.items if isinstance(it, TextBoxItem)
+                 and (it.raw_text or it.text or "").strip()]
+        if not boxes:
+            QMessageBox.information(self, "AI fit", "No text boxes on this canvas.")
+            return
+        items = [{"n": it.n, "text": (it.raw_text or it.text), "w": it.w, "h": it.h}
+                 for it in boxes]
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = llm_break.break_bubbles(items) or {}
+        finally:
+            QApplication.restoreOverrideCursor()
+        for it in boxes:
+            it.raw_text = it.raw_text or it.text
+            it.apply_perfect_size(lines=result.get(it.n))  # LLM lines or local
+            it.update()
+        self._record_if_changed()
+        if result:
+            QMessageBox.information(
+                self, "AI fit",
+                f"AI-broke and sized {len(result)}/{len(boxes)} boxes "
+                f"(model: {llm_break.model()}). Any the model skipped were sized "
+                f"locally.")
+        else:
+            QMessageBox.warning(
+                self, "AI fit",
+                "The AI call returned nothing (no network, bad key, or model "
+                "error) — every box was sized locally instead.")
 
     def _perfect_size(self, scope="selected"):
         """Manual trigger: fill text box(es) to their bubbles. scope="selected"

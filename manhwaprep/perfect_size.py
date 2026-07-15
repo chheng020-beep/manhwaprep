@@ -208,3 +208,33 @@ def fit(text, box_w, box_h, font_family, margin=0.06, size_min=6.0, size_max=200
     size, lines, fm, aw = best
     lines = balance_lines(tokens, len(lines), aw, fm)
     return round(size, 1), lines
+
+
+def fit_lines(lines, box_w, box_h, font_family, margin=0.06,
+              size_min=6.0, size_max=200.0, line_spacing: float = 1.0,
+              bold: bool = False, italic: bool = False):
+    """Largest font size at which a FIXED set of lines (e.g. chosen by the LLM)
+    fits box_w x box_h. Unlike fit(), the line breaks are not re-decided here —
+    only the size is searched. Returns the size."""
+    lines = [l for l in (lines or []) if l is not None]
+    if not "".join(lines).strip():
+        return size_min
+
+    def feasible(size, m):
+        f = QFont(font_family); f.setPointSizeF(size)
+        f.setBold(bold); f.setItalic(italic)
+        fm = QFontMetricsF(f)
+        aw, ah = box_w * (1 - 2 * m), box_h * (1 - 2 * m)
+        h_ok = len(lines) * fm.lineSpacing() * line_spacing <= ah
+        w_ok = all(fm.horizontalAdvance(l) <= aw for l in lines)
+        return h_ok and w_ok
+
+    lo, hi, best = size_min, size_max, None
+    while hi - lo > 0.5:
+        mid = (lo + hi) / 2
+        if feasible(mid, margin):
+            best = mid
+            lo = mid
+        else:
+            hi = mid
+    return round(best if best is not None else size_min, 1)
