@@ -26,7 +26,11 @@ def slugify(name: str) -> str:
 
 
 def _number_in(text: str) -> float | None:
-    m = re.search(r"(\d+(?:\.\d+)?)", text or "")
+    # Prefer the number that follows "chapter" so a leading numeric id
+    # (e.g. "9356816-chapter-1") doesn't get mistaken for the chapter number.
+    m = re.search(r"chapter[\s._-]*(\d+(?:\.\d+)?)", text or "", re.IGNORECASE)
+    if m is None:
+        m = re.search(r"(\d+(?:\.\d+)?)", text or "")
     return float(m.group(1)) if m else None
 
 

@@ -1,6 +1,15 @@
 from manhwaprep import series
 
 
+def test_number_prefers_chapter_token_over_numeric_id():
+    # generic (non-comix) URL with a numeric id prefix on the chapter segment
+    s = series.detect("https://example.com/manga/9356816-chapter-7")
+    assert s.chapter_number == 7.0
+    # folder chapter with the same shape
+    f = series.detect("/x/My Series/9356816-chapter-3")
+    assert f.chapter_number == 3.0
+
+
 def test_comix_url():
     s = series.detect(
         "https://comix.to/title/55kym-why-the-villainess-wields-the-sword/9356816-chapter-1")
