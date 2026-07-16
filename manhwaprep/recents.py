@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tempfile
 import time
 
 from . import config
@@ -119,12 +120,43 @@ def add_font(name: str) -> None:
             pass
 
 
+# Keep plenty of real saves; a heavy translator works through many chapters.
+_RECENTS_CAP = 60
+
+
+def _under_temp(path: str) -> bool:
+    """True if `path` sits inside a system temp dir (e.g. /var/folders/…/T/…)."""
+    if not path:
+        return False
+    try:
+        p = os.path.realpath(os.path.abspath(path))
+    except Exception:
+        return False
+    for root in (tempfile.gettempdir(), "/tmp"):
+        try:
+            if p.startswith(os.path.realpath(root) + os.sep):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _is_dead_temp(entry: dict) -> bool:
+    """A project saved into a temp working dir the OS has since deleted. These
+    are gone for good, so they must not linger in the list and crowd real,
+    permanent saves out of the cap. Entries merely missing on a permanent path
+    (e.g. an unplugged external drive) are NOT dead — they may come back."""
+    layout = entry.get("layout", "")
+    return _under_temp(layout) and not os.path.exists(layout)
+
+
 def add_recent(layout_path: str, chapter: str = "", thumb: str = "") -> None:
     """Record (or bump) a project. layout_path is the chapter's layout.json."""
     layout_path = os.path.abspath(layout_path)
     reg = _registry_path()
     with _locked(reg):
-        data = [e for e in _read() if e.get("layout") != layout_path]
+        data = [e for e in _read()
+                if e.get("layout") != layout_path and not _is_dead_temp(e)]
         data.insert(0, {
             "layout": layout_path,
             "chapter": chapter or "",
@@ -132,6 +164,6 @@ def add_recent(layout_path: str, chapter: str = "", thumb: str = "") -> None:
             "saved_at": time.time(),
         })
         try:
-            _atomic_write(reg, data[:30])
+            _atomic_write(reg, data[:_RECENTS_CAP])
         except Exception:
             pass

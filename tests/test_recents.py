@@ -50,6 +50,41 @@ def test_no_leftover_temp_file(tmp_path, monkeypatch):
     assert leftovers == []
 
 
+def test_add_recent_prunes_dead_temp_entries(tmp_path, monkeypatch):
+    """A save that went to a temp working dir the OS deleted must be dropped
+    from storage on the next save, so it stops crowding real saves out of the
+    cap. A permanent save that merely doesn't exist yet is NOT pruned."""
+    _point_registry_at(tmp_path, monkeypatch)
+    import tempfile
+    reg = recents._registry_path()
+    dead_temp = os.path.join(tempfile.gettempdir(), "tmpDOOMED", "typeset", "layout.json")
+    # a permanent (non-temp) path with no file yet — e.g. an unplugged drive.
+    # Must NOT be under tmp_path, which pytest places inside the temp dir on macOS.
+    perm_missing = "/PermanentVolume_notmp/gone/typeset/layout.json"
+    json.dump([
+        {"layout": dead_temp, "chapter": "ephemeral", "thumb": "", "saved_at": 3.0},
+        {"layout": perm_missing, "chapter": "perm", "thumb": "", "saved_at": 2.0},
+    ], open(reg, "w"))
+    b = tmp_path / "chNew" / "layout.json"; b.parent.mkdir(parents=True); b.write_text("{}")
+    recents.add_recent(str(b), chapter="new")
+    stored = {e["chapter"] for e in json.load(open(reg))}
+    assert "ephemeral" not in stored     # dead temp entry pruned from storage
+    assert "perm" in stored              # permanent-but-missing entry kept
+    assert "new" in stored
+
+
+def test_add_recent_keeps_more_than_thirty(tmp_path, monkeypatch):
+    """Regression: the old 30-entry cap dropped real saves once a translator
+    had worked through enough chapters. The cap is now higher."""
+    _point_registry_at(tmp_path, monkeypatch)
+    for i in range(40):
+        p = tmp_path / f"ch{i}" / "layout.json"
+        p.parent.mkdir(parents=True); p.write_text("{}")
+        recents.add_recent(str(p), chapter=f"ch{i}")
+    chapters = {e["chapter"] for e in recents.list_recent()}
+    assert len(chapters) == 40           # all 40 survive (old cap 30 would drop 10)
+
+
 def test_add_font_dedupe_and_cap_under_new_path(tmp_path, monkeypatch):
     _point_registry_at(tmp_path, monkeypatch)
     for i in range(15):
