@@ -2204,6 +2204,11 @@ class TypesetEditor(QWidget):
             # without needing a re-edit. _refit() then keeps it (fitted early-return).
             it.h = float(d["h"])
             it._refit()
+            # _refit() (and the constructor's own _refit) re-centre the box
+            # vertically, which drifts it off the position the user dragged it to
+            # — and the drift accumulates on every panel switch / export. The
+            # saved x/y ARE the user's final placement, so pin them back exactly.
+            it.setPos(float(d["x"]), float(d["y"]))
             if d.get("rot"):
                 it.setTransformOriginPoint(it.w / 2, it.h / 2)
                 it.setRotation(d["rot"])
