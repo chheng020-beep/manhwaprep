@@ -466,6 +466,16 @@ class MainWindow(QWidget):
         if on_projects:
             self._projects_panel.refresh()
 
+    def closeEvent(self, e):
+        # Stop the background prep-queue thread cleanly on quit, so Qt doesn't
+        # tear down a running QThread ("QThread: Destroyed while running") and
+        # no pipeline.run keeps executing during interpreter teardown.
+        try:
+            self._prep_queue.stop()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
     # -- actions -------------------------------------------------------
     def _on_new_window(self):
         try:

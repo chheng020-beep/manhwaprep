@@ -20,6 +20,7 @@ def test_new_window_button_spawns(app, monkeypatch):
     assert hasattr(win, "new_window_btn")
     win.new_window_btn.click()
     assert calls["n"] == 1
+    win._prep_queue.stop()   # stop the background thread cleanly (pristine output)
 
 
 def test_new_window_warns_on_failure(app, monkeypatch):
@@ -31,3 +32,4 @@ def test_new_window_warns_on_failure(app, monkeypatch):
     win = ui.MainWindow()
     win.new_window_btn.click()  # must not raise
     assert warned["n"] == 1
+    win._prep_queue.stop()   # stop the background thread cleanly (pristine output)

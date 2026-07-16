@@ -92,6 +92,7 @@ def test_mainwindow_has_studio_tab():
     w = MainWindow()
     titles = [w.tabs.tabText(i) for i in range(w.tabs.count())]
     assert "Studio" in titles
+    w._prep_queue.stop()   # stop the background thread cleanly (pristine output)
 
 
 def test_render_translated_multisegment_distinct():

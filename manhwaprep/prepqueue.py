@@ -75,13 +75,15 @@ class PrepQueue(QObject):
         self._wake.set()
 
     def skip_current(self) -> None:
-        if self._control is not None:
-            self._control.request_stop()
+        c = self._control          # snapshot: _loop may null it concurrently
+        if c is not None:
+            c.request_stop()
 
     def stop(self) -> None:
         self._running = False
-        if self._control is not None:
-            self._control.request_stop()
+        c = self._control          # snapshot: _loop may null it concurrently
+        if c is not None:
+            c.request_stop()
         self._wake.set()
         self._thread.quit()
         self._thread.wait(3000)

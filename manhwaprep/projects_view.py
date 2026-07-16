@@ -80,7 +80,7 @@ class _ChapterRow(QWidget):
             self._btn("Export & mark done", self._mark_done)
         if status in ("ready", "done", "error"):
             self._btn("Re-prep", self._reprep)
-        if status in ("queued", "prepping"):
+        if status == "prepping":   # Skip aborts the CURRENT prep only
             self._btn("Skip", self.panel.queue.skip_current)
         self._btn("Remove", self._remove)
         if status == "error" and ch.get("error"):

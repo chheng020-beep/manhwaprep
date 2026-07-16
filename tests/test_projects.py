@@ -1,4 +1,5 @@
 import os
+from manhwaprep import series
 from manhwaprep.projects import ProjectStore
 
 COMIX = "https://comix.to/title/55kym-why-the-villainess-wields-the-sword/9356816-chapter-1"
@@ -61,3 +62,19 @@ def test_persistence_roundtrip(tmp_path):
     a = ProjectStore(path); a.add_chapter(COMIX)
     b = ProjectStore(path)                         # fresh instance, same file
     assert len(b.list_projects()) == 1
+
+
+def test_import_recents_does_not_clobber_done_status(tmp_path):
+    """import_recents runs on every launch; a chapter the user later marked
+    `done` must NOT be reverted to `ready` on the next import."""
+    s = _store(tmp_path)
+    layout = str(tmp_path / "MySeries" / "ch3" / "typeset" / "layout.json")
+    out_dir = os.path.dirname(os.path.dirname(layout))          # .../MySeries/ch3
+    entry = {"layout": layout, "chapter": "ch3", "thumb": ""}
+    s.import_recents([entry])                                   # first launch -> ready
+    info = series.detect(out_dir)
+    pid, cid = info.series_id, info.chapter_id
+    assert s.get_chapter(pid, cid)["status"] == "ready"
+    s.set_chapter(pid, cid, status="done")                     # user finishes it
+    s.import_recents([entry])                                   # next launch
+    assert s.get_chapter(pid, cid)["status"] == "done"         # preserved, not reverted

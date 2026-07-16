@@ -159,6 +159,12 @@ class ProjectStore:
                 continue
             # source = the chapter's output folder (parent of typeset/)
             out_dir = os.path.dirname(os.path.dirname(layout))
+            # Import each recents entry only ONCE. import_recents runs on every
+            # launch, so if the chapter is already tracked (possibly marked
+            # `done`), leave it alone — never clobber the user's status/fields.
+            info = series.detect(out_dir)
+            if self.get_chapter(info.series_id, info.chapter_id) is not None:
+                continue
             pid, cid = self.add_chapter(out_dir)
             self.set_chapter(pid, cid, status="ready", layout=layout,
                              thumb=e.get("thumb", ""), output_dir=out_dir,
