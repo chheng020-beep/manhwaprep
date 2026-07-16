@@ -8,8 +8,8 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QIcon, QPixmap
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,8 +19,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -41,6 +39,9 @@ from .pipeline import run, run_for_batch
 from .studio import Studio
 from .studio_tab import StudioTab
 from . import relaunch
+from . import projects as projects_mod
+from .prepqueue import PrepQueue
+from .projects_view import ProjectsPanel
 
 
 def _ocr_available() -> bool:
@@ -221,6 +222,13 @@ class MainWindow(QWidget):
         # Pick the job up top; each tab keeps its own settings so you never
         # re-toggle anything to do a different task.
         self.tabs = QTabWidget()
+        # Project registry + single background prep queue (started once).
+        self._store = projects_mod.ProjectStore(projects_mod.registry_path())
+        self._store.reset_prepping()          # recover a crash mid-prep
+        from . import recents as _recents
+        self._store.import_recents(_recents.list_recent())
+        self._prep_queue = PrepQueue(self._store)
+        self._prep_queue.start()
         self._projects_tab = self._build_projects_tab()
         self._clean_tab = self._build_clean_tab()
         self._split_tab = ManualSplitWidget()
@@ -297,60 +305,9 @@ class MainWindow(QWidget):
 
     # -- tab construction ---------------------------------------------
     def _build_projects_tab(self) -> QWidget:
-        tab = QWidget()
-        v = QVBoxLayout(tab)
-        head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Recent projects</b> — click to continue"))
-        head.addStretch(1)
-        refresh = QPushButton("↻ Refresh")
-        refresh.clicked.connect(self._refresh_projects)
-        head.addWidget(refresh)
-        v.addLayout(head)
-
-        self.proj_list = QListWidget()
-        self.proj_list.setIconSize(QSize(72, 52))
-        self.proj_list.setSpacing(2)
-        self.proj_list.itemClicked.connect(self._open_project_item)
-        v.addWidget(self.proj_list, 1)
-        self._refresh_projects()
-        return tab
-
-    def _refresh_projects(self):
-        import time as _t
-
-        from . import recents
-
-        self.proj_list.clear()
-        entries = recents.list_recent()
-        if not entries:
-            placeholder = QListWidgetItem(
-                "No saved projects yet — run a Typeset job, then Save project.")
-            placeholder.setFlags(Qt.NoItemFlags)
-            self.proj_list.addItem(placeholder)
-            return
-        for e in entries:
-            name = e.get("chapter") or os.path.basename(
-                os.path.dirname(os.path.dirname(e.get("layout", ""))))
-            when = e.get("saved_at", 0)
-            ds = _t.strftime("%b %d, %H:%M", _t.localtime(when)) if when else ""
-            item = QListWidgetItem(f"{name}    ·  {ds}")
-            thumb = e.get("thumb", "")
-            if thumb and os.path.exists(thumb):
-                pm = QPixmap(thumb)
-                if not pm.isNull():
-                    side = min(pm.width(), pm.height())
-                    pm = pm.copy(0, 0, pm.width(), side).scaled(
-                        72, 52, Qt.KeepAspectRatioByExpanding,
-                        Qt.SmoothTransformation)
-                    item.setIcon(QIcon(pm))
-            item.setData(Qt.UserRole, e.get("layout"))
-            item.setToolTip(e.get("layout", ""))
-            self.proj_list.addItem(item)
-
-    def _open_project_item(self, item):
-        path = item.data(Qt.UserRole)
-        if path:
-            self._open_typeset(path)
+        self._projects_panel = ProjectsPanel(
+            self._store, self._prep_queue, open_editor=self._open_typeset)
+        return self._projects_panel
 
     def _build_clean_tab(self) -> QWidget:
         tab = QWidget()
@@ -507,7 +464,7 @@ class MainWindow(QWidget):
         self.bar.setVisible(not on_manual_split)
         self.go.setEnabled(not on_projects and not on_manual_split)
         if on_projects:
-            self._refresh_projects()
+            self._projects_panel.refresh()
 
     # -- actions -------------------------------------------------------
     def _on_new_window(self):
@@ -621,6 +578,7 @@ class MainWindow(QWidget):
         self._start_clean(src)
 
     def _start_clean(self, source: str):
+        self._last_source = source
         self._control = Control()
         worker = Worker(
             source,
@@ -742,7 +700,14 @@ class MainWindow(QWidget):
         # typeset run -> open the native editor on the generated layout
         if getattr(self, "_typeset_active", False) and outputs:
             self._append(f"✓ typeset canvas ready in {elapsed} — opening editor…")
-            self._open_typeset(outputs[0])
+            layout_path = outputs[0]
+            out_dir = os.path.dirname(os.path.dirname(layout_path))
+            pid, cid = self._store.add_chapter(self._last_source or out_dir)
+            self._store.set_chapter(
+                pid, cid, status="ready", layout=layout_path,
+                thumb=os.path.join(out_dir, "typeset", "canvas_001.png"),
+                output_dir=out_dir)
+            self._open_typeset(layout_path)
         else:
             self._append(f"✓ {len(outputs)} image(s) ready in {elapsed}.")
 
