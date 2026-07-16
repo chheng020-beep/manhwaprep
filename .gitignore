@@ -27,3 +27,5 @@ recent_projects.json
 crash.log
 openrouter_key.txt
 openrouter_model.txt
+openrouter_translate_model.txt
+translate_prompt.txt
