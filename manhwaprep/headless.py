@@ -290,91 +290,91 @@ def _collect(url: str, timeout_ms: int = 90000) -> list[str]:
     return best
 
 
-def _reader_has_canvas(pg) -> bool:
-    """True if the comix reader has painted a real page onto a <canvas> — i.e.
-    it is tile-scrambling. Decided per run so it survives comix.to switching the
-    scramble DRM on or off between chapters."""
+def _blankish(png_bytes: bytes) -> bool:
+    """True if a screenshot is (near-)uniform — an unpainted/blank canvas. comix
+    clears the `is-loading` class BEFORE the descramble actually paints, so we
+    must reject blank grabs and retry while the page is still on screen."""
     try:
-        return bool(pg.evaluate(
-            "() => [...document.querySelectorAll('canvas')]"
-            ".some(c => c.width > 300 && c.height > 300)"
-        ))
+        import io
+        from PIL import Image, ImageStat
+        im = Image.open(io.BytesIO(png_bytes)).convert("L")
+        return ImageStat.Stat(im).stddev[0] < 3.0
     except Exception:
         return False
 
 
-def _capture_scrambled_pages(pg) -> list[bytes]:
-    """Scroll the already-open comix reader and capture each descrambled page.
+def _capture_comix_pages(pg, page_count: int) -> dict:
+    """Scroll the comix reader top-to-bottom and capture every page in order.
 
-    comix.to scrambles page tiles (DRM); its JS reassembles them onto a
-    <canvas class="rpage-page__img">. We read that canvas — lossless via
-    toDataURL when it isn't CORS-tainted, otherwise a full-resolution PNG
-    screenshot of the same element. Pages are keyed by the reader's stable
-    `data-page` index (robust against virtual scrolling) and captured only once
-    their `.rpage-page` wrapper clears the `is-loading` class (fully drawn).
-    Returns PNG bytes ordered by page index.
-    """
-    import base64
+    comix.to scrambles roughly every Nth page as pixel tiles and reassembles it
+    live onto a <canvas class="rpage-page__img"> (DRM); the rest are plain <img>.
+    The scramble is PER PAGE, so there is no single strategy for the whole
+    chapter — we decide per page while scrolling:
 
-    captured: dict[int, bytes] = {}   # data-page index → PNG bytes
+      * <img>    → record its URL (downloaded later: lossless and fast)
+      * <canvas> → screenshot the descrambled pixels. toDataURL returns BLANK on
+                   comix's canvas (its context isn't readable), so a screenshot
+                   is the only way; blank-check it and keep scrolling so a still-
+                   painting page gets more tries before it recycles.
+
+    The reader is a scroll-driven virtual swiper (only ~5 pages live at once), so
+    we scroll continuously rather than jump — jumping never triggers its lazy
+    render. Returns {data_page: ('url', str) | ('shot', png_bytes)}."""
+    captured: dict[int, tuple] = {}
 
     def _snap():
-        # only wrappers that finished descrambling and didn't error
-        for wrap in pg.query_selector_all(
-                ".rpage-page:not(.is-loading):not(.is-errored)"):
-            try:
-                raw = wrap.get_attribute("data-page")
-                if raw is None:
-                    continue
-                idx = int(raw)
-                if idx in captured:
-                    continue
-                el = (wrap.query_selector("canvas.rpage-page__img")
-                      or wrap.query_selector("canvas"))
-                is_canvas = el is not None
+        rows = pg.evaluate("""() => [...document.querySelectorAll('.rpage-page')].map(w => {
+            const r = w.getBoundingClientRect();
+            const c = w.querySelector('canvas'), i = w.querySelector('img');
+            return {
+                dp: w.getAttribute('data-page'),
+                loading: w.className.includes('is-loading'),
+                errored: w.className.includes('is-errored'),
+                kind: c ? 'canvas' : (i ? 'img' : 'none'),
+                src: i ? (i.currentSrc || i.src || '') : '',
+                onscreen: r.bottom > -200 && r.top < window.innerHeight + 200,
+            };
+        })""")
+        for r in rows:
+            if not r["dp"] or r["loading"] or r["errored"] or not r["onscreen"]:
+                continue
+            idx = int(r["dp"])
+            if idx in captured:
+                continue
+            if r["kind"] == "img" and r["src"].startswith("http"):
+                captured[idx] = ("url", r["src"])
+            elif r["kind"] == "canvas":
+                el = pg.query_selector(f'.rpage-page[data-page="{idx}"] canvas')
                 if el is None:
-                    el = wrap.query_selector("img")
-                if el is None:
                     continue
-                bb = el.bounding_box()
-                if not bb or bb["height"] < 200 or bb["width"] < 200:
+                try:
+                    shot = el.screenshot(type="png")
+                except Exception:
                     continue
-                data = None
-                if is_canvas:
-                    try:  # lossless read of the descrambled pixels
-                        durl = el.evaluate("c => c.toDataURL('image/png')")
-                        if isinstance(durl, str) and durl.startswith("data:image"):
-                            data = base64.b64decode(durl.split(",", 1)[1])
-                    except Exception:
-                        data = None            # CORS-tainted → screenshot below
-                if data is None:
-                    data = el.screenshot(type="png")
-                captured[idx] = data
-            except Exception:
-                pass
+                if not _blankish(shot):        # only keep a genuinely painted page
+                    captured[idx] = ("shot", shot)
 
-    prev_h = -1
-    for _ in range(400):
-        pg.mouse.wheel(0, 1000)
-        pg.wait_for_timeout(200)
+    prev_y, stall = -1, 0
+    for _ in range(2000):
+        pg.mouse.wheel(0, 550)
+        pg.wait_for_timeout(350)
         _snap()
-        h = pg.evaluate("document.body.scrollHeight")
-        if h == prev_h:
-            pg.wait_for_timeout(1500)
-            _snap()
-            if pg.evaluate("document.body.scrollHeight") == prev_h:
-                break
-        prev_h = h
+        if page_count and len(captured) >= page_count:
+            break
+        at_bottom = pg.evaluate(
+            "(window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 5)")
+        if at_bottom:
+            for _ in range(6):     # dwell so the last canvas pages finish painting
+                pg.wait_for_timeout(600)
+                _snap()
+            break
+        y = pg.evaluate("window.scrollY")
+        stall = stall + 1 if y == prev_y else 0
+        if stall > 8:
+            break
+        prev_y = y
 
-    pg.wait_for_timeout(1500)
-    _snap()  # final pass after everything settles
-
-    if captured:
-        lo, hi = min(captured), max(captured)
-        missing = [i for i in range(lo, hi + 1) if i not in captured]
-        if missing:
-            print(f"[headless] comix: pages not captured (still loading?): {missing}")
-    return [v for _, v in sorted(captured.items())]
+    return captured
 
 
 def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
@@ -384,17 +384,17 @@ def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
 
     host = urlparse(chapter_url).netloc.lower()
     if "comix.to" in host or "comick.io" in host or "comick.fun" in host:
-        # comix.to may or may not tile-scramble a given chapter (DRM toggles over
-        # time), so decide fresh in one browser session: if the reader paints
-        # pages onto <canvas>, capture the descrambled canvas; otherwise the
-        # reader serves plain image URLs we can direct-download (faster, lossless).
+        # comix.to scrambles ~every Nth page (canvas DRM) and serves the rest as
+        # plain images — PER PAGE — so scroll the whole reader and capture each
+        # page the right way: screenshot the descrambled canvases, URL for imgs.
         from playwright.sync_api import sync_playwright
 
+        captured_pages = {}
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=_LAUNCH_ARGS)
             ctx = browser.new_context(
                 user_agent=UA, viewport={"width": 1000, "height": 1080},
-                device_scale_factor=2)  # sharper screenshot fallback if tainted
+                device_scale_factor=2)
             pg = ctx.new_page()
             pg.add_init_script(_STEALTH_JS)
             pg.add_init_script(_COMIX_HOOK)
@@ -403,38 +403,45 @@ def download_via_browser(chapter_url: str, dest_dir: str) -> list[str]:
             except Exception:
                 pass
             pg.wait_for_timeout(5000)
-
-            # Nudge the first page to paint before deciding scramble vs. plain.
-            scrambled = _reader_has_canvas(pg)
-            if not scrambled:
-                pg.mouse.wheel(0, 800)
-                pg.wait_for_timeout(2500)
-                scrambled = _reader_has_canvas(pg)
-
-            if scrambled:
-                shots = _capture_scrambled_pages(pg)
-                browser.close()
-                if len(shots) >= 3:
-                    paths = []
-                    for i, data in enumerate(shots):
-                        out = os.path.join(dest_dir, f"{i + 1:03d}.png")
-                        with open(out, "wb") as f:
-                            f.write(data)
-                        paths.append(out)
-                    return paths
-                raise RuntimeError(
-                    "comix.to rendered too few pages — the reader may be blank or "
-                    "behind a Cloudflare challenge. Try again, or use HakuNeko.")
-
-            # not scrambled: the map hook captured plain image URLs
-            captured = pg.evaluate("window.__comix_pages")
+            cap = pg.evaluate("window.__comix_pages") or []
+            page_count = max((c["count"] for c in cap), default=0)
+            captured_pages = _capture_comix_pages(pg, page_count)
             browser.close()
 
-        urls = _filter_comix_items(captured)
-        if len(urls) >= 3:
-            paths = _download_urls(urls, dest_dir, referer="https://comix.to/")
-            if paths:
-                return paths
+        if len(captured_pages) < 3:
+            raise RuntimeError(
+                "comix.to rendered too few pages — the reader may be blank or "
+                "behind a Cloudflare challenge. Try again, or use HakuNeko.")
+
+        # Materialize in reading order: download the plain-image pages, write the
+        # screenshotted (descrambled) canvas pages.
+        session = requests.Session()
+        headers = {"User-Agent": UA, "Referer": "https://comix.to/"}
+        paths = []
+        for idx in sorted(captured_pages):
+            kind, val = captured_pages[idx]
+            if kind == "shot":
+                out = os.path.join(dest_dir, f"{idx:03d}.png")
+                with open(out, "wb") as f:
+                    f.write(val)
+                paths.append(out)
+                continue
+            try:
+                resp = session.get(val, headers=headers, timeout=60)
+                resp.raise_for_status()
+            except Exception as e:
+                print(f"[headless] comix page {idx} failed: {e}")
+                continue
+            ext = os.path.splitext(urlparse(val).path)[1].lower()
+            if ext not in IMG_EXTS:
+                ext = _CT_EXT.get(
+                    resp.headers.get("content-type", "").split(";")[0], ".jpg")
+            out = os.path.join(dest_dir, f"{idx:03d}{ext}")
+            with open(out, "wb") as f:
+                f.write(resp.content)
+            paths.append(out)
+        if len(paths) >= 3:
+            return paths
         raise RuntimeError("comix.to: no chapter pages found on that URL.")
 
     urls = _collect(chapter_url)
