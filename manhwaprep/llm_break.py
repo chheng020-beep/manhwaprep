@@ -19,6 +19,55 @@ import urllib.request
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "google/gemini-2.5-flash"
+DEFAULT_TRANSLATE_MODEL = "google/gemini-2.5-pro"
+
+DEFAULT_TRANSLATE_PROMPT = """You are my Khmer manhwa translator.
+
+Translate every numbered line I send into natural, easy-to-read Khmer suitable for manhwa dialogue.
+
+Translation style:
+* Use natural spoken Khmer at about Grade 6 reading level.
+* Do not translate too literally.
+* Keep the emotion, personality, tension, humour, and dramatic tone of the original.
+* Make the dialogue sound like real Khmer conversations, not formal textbook Khmer.
+* Use short, smooth sentences that fit naturally inside speech bubbles.
+* Do not add explanations or extra comments.
+
+Names and pronouns:
+* Keep character and location names consistent across chapters.
+* Use «លោក» for a respected or adult male character when appropriate.
+* Use «នាង» for a female character when speaking about her.
+* Use «លោកជំទាវ» for a countess or noblewoman.
+* Use «លោកអភិបាល» for Count.
+* Use «បារ៉ុន» for Baron and «វិសខោន» for Viscount.
+* Do not overuse the generic word «អ្នក».
+* Use «ដំបន់» instead of «ដែន» in every relevant context.
+
+Formatting:
+* Keep the original numbers.
+* Keep the [bubble] and [sfx] tags exactly.
+* Put only one numbered line on each line.
+* Translate repeated or broken OCR text into one clear, natural sentence.
+* Keep names, websites, credits, symbols, and unreadable watermark text unchanged when they cannot be translated accurately.
+* Translate meaningful sound effects naturally into Khmer when possible.
+* Do not remove any numbered lines.
+
+For internal thoughts and narration:
+* Make them emotionally natural and clear.
+* Use a slightly dramatic manhwa tone without making the Khmer overly complicated.
+
+For Facebook post grouping:
+* On the final line, write:
+  POSTS: 1-4 | 5-9 | 10-13
+* Adjust the ranges based on the actual chapter.
+* Each post should contain a coherent emotional scene.
+* End each post near a reveal, dramatic moment, question, reaction, or small cliffhanger whenever possible.
+* Do not include credit pages or watermark-only lines in the Facebook post groups unless necessary.
+
+Important:
+* Return only the complete translation and the final POSTS line.
+* Do not write an introduction, explanation, summary, or closing message.
+* Keep the same terminology and character names used in previous chapters."""
 
 
 def _cfg_path(name: str) -> str:
@@ -113,3 +162,56 @@ def break_bubbles(items, key: str | None = None, mdl: str | None = None,
         if "".join("".join(l.split()) for l in lines) == "".join(it["text"].split()):
             out[it["n"]] = lines
     return out or None
+
+
+def translate_model() -> str:
+    try:
+        m = open(_cfg_path("openrouter_translate_model.txt"), encoding="utf-8").read().strip()
+        if m:
+            return m
+    except OSError:
+        pass
+    return DEFAULT_TRANSLATE_MODEL
+
+
+def translate_prompt() -> str:
+    """User's system prompt for translation; editable at
+    ~/ManhwaPrep/translate_prompt.txt, else the built-in default."""
+    try:
+        p = open(_cfg_path("translate_prompt.txt"), encoding="utf-8").read().strip()
+        if p:
+            return p
+    except OSError:
+        pass
+    return DEFAULT_TRANSLATE_PROMPT
+
+
+def translate(transcript, key: str | None = None, mdl: str | None = None,
+              timeout: float = 600.0):
+    """Translate a numbered '[bubble]/[sfx]' English transcript into Khmer using
+    the user's prompt. Returns the raw Khmer text (numbered lines + POSTS line) or
+    None on failure."""
+    key = key or api_key()
+    if not key or not (transcript or "").strip():
+        return None
+    body = json.dumps({
+        "model": mdl or translate_model(),
+        "messages": [
+            {"role": "system", "content": translate_prompt()},
+            {"role": "user", "content": transcript},
+        ],
+        "temperature": 0.4,
+    }).encode("utf-8")
+    req = urllib.request.Request(OPENROUTER_URL, data=body, headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://manhwaprep.local",
+        "X-Title": "ManhwaPrep",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+    except Exception:
+        return None
+    return content if content and content.strip() else None

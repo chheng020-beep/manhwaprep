@@ -1998,6 +1998,17 @@ class TypesetEditor(QWidget):
         self.paste_btn.clicked.connect(self._paste)
         krow.addWidget(self.copy_btn); krow.addWidget(self.paste_btn)
         ig.addLayout(krow)
+        self.translate_btn = QPushButton("🌐 Translate & fill — whole chapter (AI)")
+        self.translate_btn.setToolTip(
+            "Translate the whole chapter to Khmer with your OpenRouter model (your "
+            "prompt) and fill every box + FB post groups — no ChatGPT copy/paste. "
+            "Default model google/gemini-2.5-pro; edit "
+            "~/ManhwaPrep/openrouter_translate_model.txt / translate_prompt.txt.")
+        self.translate_btn.setStyleSheet(
+            "QPushButton{background:#0ea5e9;color:white;border-radius:6px;"
+            "padding:7px;font-weight:bold;}QPushButton:hover{background:#38bdf8;}")
+        self.translate_btn.clicked.connect(self._translate_and_fill)
+        ig.addWidget(self.translate_btn)
         ig.addWidget(QLabel("3️⃣ ✨ Perfect size — fill bubble(s):"))
         prow = QHBoxLayout()
         self.perfect_one_btn = QPushButton("✨ This box")
@@ -3255,47 +3266,45 @@ class TypesetEditor(QWidget):
         return groups
 
     def _paste(self):
-        from .psgen import parse_khmer_list
-
         dlg = PasteDialog(self)
         if dlg.exec() != QDialog.Accepted:
             return
-        raw = dlg.text()
+        filled, posts = self._fill_from_khmer(dlg.text())
+        if not filled and not posts:
+            QMessageBox.warning(self, "No lines", "No 'N. text' lines found.")
+            return
+        msg = (f"Filled {filled} text box(es) across {len(self.segments)} canvas(es)."
+               if filled else
+               f"Saved {len(posts)} post groups — FB panels will follow them.")
+        QMessageBox.information(self, "Filled", msg)
+
+    def _fill_from_khmer(self, raw):
+        """Parse a numbered Khmer reply (+ POSTS line) and fill EVERY canvas's
+        boxes, auto-sizing each. Returns (filled_count, posts)."""
+        from .psgen import parse_khmer_list
         km = parse_khmer_list(raw)
         posts = self._parse_posts(raw)
         if posts:
             self._post_groups = posts
         if not km:
-            if posts:
-                QMessageBox.information(
-                    self, "Story split set",
-                    f"Saved {len(posts)} post groups — FB panels will follow them.")
-                return
-            QMessageBox.warning(self, "No lines", "No 'N. text' lines found.")
-            return
-        # Box numbers are unique across the whole chapter, so fill EVERY canvas in
-        # one go — not just the one on screen — by visiting each segment, filling
-        # its matching boxes, and saving its state.
+            return 0, posts
+        self._commit_inline()
         self._commit_items()
         cur = self.seg_idx
         filled = 0
         for i in range(len(self.segments)):
-            self.seg_idx = i  # so _commit_items writes the RIGHT canvas
+            self.seg_idx = i
             self._load_segment(i)
             hit = False
             for it in self.items:
-                if it.n in km:
-                    raw = km[it.n] or ""
-                    # Detect **name** markers Claude adds for proper nouns.
-                    has_name = bool(re.search(r'\*\*[^*]+\*\*', raw))
-                    it.text = re.sub(r'\*\*([^*]+)\*\*', r'\1', raw)
+                if isinstance(it, TextBoxItem) and it.n in km:
+                    r = km[it.n] or ""
+                    has_name = bool(re.search(r'\*\*[^*]+\*\*', r))  # proper-noun marks
+                    it.text = re.sub(r'\*\*([^*]+)\*\*', r'\1', r)
                     it.raw_text = it.text
                     if has_name:
                         it.font.setBold(True)
                         it.font.setItalic(True)
-                    # Auto perfect-size the pasted Khmer to fill the bubble (this is
-                    # the bulk-paste workflow — the main way boxes get their text, so
-                    # it must trigger the fit like the inline/side-panel commits do).
                     it.apply_perfect_size()
                     if not it.fitted:
                         it._refit()
@@ -3303,13 +3312,57 @@ class TypesetEditor(QWidget):
                     filled += 1
                     hit = True
             if hit:
-                self._commit_items()  # persist this canvas's Khmer
+                self._commit_items()
         self.seg_idx = cur
-        self._load_segment(cur)  # return to where the user was
+        self._load_segment(cur)
+        return filled, posts
+
+    def _translate_and_fill(self):
+        """Translate the whole chapter with the LLM (OpenRouter, your prompt) and
+        fill every box — no copy/paste to ChatGPT needed."""
+        from PySide6.QtWidgets import QApplication
+        from . import llm_break
+        if not llm_break.api_key():
+            QMessageBox.information(
+                self, "Translate",
+                "Add your OpenRouter key to ~/ManhwaPrep/openrouter_key.txt first.\n\n"
+                "Optional: translation model in "
+                "~/ManhwaPrep/openrouter_translate_model.txt (default "
+                "google/gemini-2.5-pro), prompt in ~/ManhwaPrep/translate_prompt.txt.")
+            return
+        rows = []
+        for seg in self.segments:
+            for it in seg["items"]:
+                rows.append((it["n"], f"{it['n']}. [{it['kind']}] {it['src']}"))
+        rows.sort(key=lambda t: t[0])
+        src = "\n".join(s for _, s in rows)
+        if not src.strip():
+            QMessageBox.information(self, "Translate", "No source text in this chapter.")
+            return
+        if QMessageBox.question(
+                self, "Translate whole chapter?",
+                f"Translate {len(rows)} lines with {llm_break.translate_model()} and "
+                f"fill every canvas?\nThis can take up to a minute.") != \
+                QMessageBox.StandardButton.Yes:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            km = llm_break.translate(src)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not km:
+            QMessageBox.warning(
+                self, "Translate",
+                "Translation failed (no network, bad key, or model error). "
+                "Try a different model in ~/ManhwaPrep/openrouter_translate_model.txt.")
+            return
+        filled, posts = self._fill_from_khmer(km)
         QMessageBox.information(
-            self, "Filled",
-            f"Filled {filled} text box(es) across {len(self.segments)} canvas(es).",
-        )
+            self, "Translated & filled",
+            f"Translated with {llm_break.translate_model()} and filled {filled} "
+            f"box(es) across {len(self.segments)} canvas(es)."
+            + (f"\n{len(posts)} FB post groups set." if posts else "")
+            + "\n\nTip: hit “🤖 AI fit — whole chapter” for symmetrical breaks.")
 
     # -- export / save -------------------------------------------------
     def _render(self, seg) -> QImage:
