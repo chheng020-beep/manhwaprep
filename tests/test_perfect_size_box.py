@@ -114,6 +114,36 @@ def test_resize_rewraps_a_fitted_box():
     assert it.text.count("\n") + 1 <= lines1
 
 
+def test_inline_manual_line_breaks_are_honored():
+    """Regression for the inline-edit 'drop a line' bug: a newline the user types
+    while editing on the panel (Enter) is stored in raw_text by _commit_inline,
+    then apply_perfect_size() runs. The auto-balancer used to re-segment raw_text
+    and compute its OWN breaks, discarding the manual newline ('input went in but
+    auto-resize pulls it back'). When raw_text carries explicit newlines they must
+    be honored as the fitted lines, not re-wrapped."""
+    # A wide box: both short words fit comfortably on ONE line, so the auto
+    # balancer would collapse them -> the only way to get two lines is to honor
+    # the manual break.
+    it = TextBoxItem(1, "", 0, 0, 400, 120)
+    it.text = "លោក\nអ្នក"
+    it.raw_text = "លោក\nអ្នក"        # exactly what _commit_inline stores after Enter
+    it.apply_perfect_size()
+    assert it.fitted is True
+    assert it.text.count("\n") == 1   # the user's single break survived
+    layout, _ = it._text_layout()
+    assert layout.lineCount() == 2    # and it renders as two visual lines
+
+
+def test_autowrap_still_applies_without_manual_breaks():
+    """Control: text with NO manual newline in raw_text must still auto-balance
+    into multiple lines (the honor-breaks path must not disable auto-wrapping)."""
+    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណ", 0, 0, 200, 60)
+    it.raw_text = it.text             # unbroken source (no '\n')
+    it.apply_perfect_size()
+    assert it.fitted is True
+    assert "\n" in it.text            # auto-wrap still kicks in
+
+
 def test_fitted_box_renders_one_visual_line_per_fitted_line():
     """RENDER-level regression: apply_perfect_size() stores fitted lines joined
     by '\\n' in self.text, but QTextLayout does NOT treat '\\n' as a line break

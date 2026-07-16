@@ -316,6 +316,14 @@ class TextBoxItem(QGraphicsItem):
         bold, italic = self.font.bold(), self.font.italic()
         hi, lo = perfect_size.PREFER_SIZES         # (40, 35) — 35 is the floor
 
+        # Manual-break path: newlines the user typed while editing (Enter) live in
+        # raw_text. Honor them as the fitted lines instead of re-segmenting and
+        # re-wrapping — otherwise the auto-balancer discards the break the user
+        # just made ("input went in but auto-resize pulls it back"). Auto-computed
+        # breaks never reach raw_text, so a '\n' here means the user put it there.
+        if lines is None and "\n" in (self.raw_text or ""):
+            lines = self.raw_text.split("\n")
+
         # LLM path: it already broke the text into the fewest SYMMETRICAL whole-word
         # lines (it reads Khmer, so it never chops a word). Just SIZE those lines to
         # fill the box, 35 floor / 40 cap; grow the height if 35 still doesn't fit.
