@@ -19,6 +19,47 @@ def registry_path() -> str:
     return os.path.join(base, "projects.json")
 
 
+# A chapter's output folder carries this sidecar recording the series/chapter
+# identity it was prepped under. It lets a later folder-based re-import (from the
+# recents list) recover the SAME identity a URL prep used, instead of detecting a
+# separate `folder:<parent>` project — so one physical chapter is never split
+# across two projects.
+_SIDECAR = ".mp_project.json"
+
+
+def _read_sidecar(folder: str) -> dict | None:
+    try:
+        path = os.path.join(folder, _SIDECAR)
+        if os.path.isfile(path):
+            d = jsonstore.read_json(path, None)
+            if isinstance(d, dict) and d.get("series_id") and d.get("chapter_id"):
+                return d
+    except Exception:
+        pass
+    return None
+
+
+def _identify(source: str) -> series.SeriesInfo:
+    """Series/chapter identity for a source. A chapter output folder that carries
+    an identity sidecar reuses that recorded identity; everything else falls back
+    to the pure URL/folder heuristic in series.detect()."""
+    try:
+        if source and os.path.isdir(source):
+            d = _read_sidecar(source)
+            if d:
+                return series.SeriesInfo(
+                    series_id=d["series_id"],
+                    series_name=d.get("series_name") or d["series_id"],
+                    chapter_id=d["chapter_id"],
+                    chapter_name=d.get("chapter_name") or d["chapter_id"],
+                    chapter_number=d.get("chapter_number"),
+                    series_url=d.get("series_url"),
+                )
+    except Exception:
+        pass
+    return series.detect(source)
+
+
 class ProjectStore:
     def __init__(self, path: str):
         self.path = path
@@ -69,7 +110,7 @@ class ProjectStore:
 
     # -- mutations (read-modify-write under lock) ---------------------
     def add_chapter(self, source: str, lang: str = "ko") -> tuple[str, str]:
-        info = series.detect(source)
+        info = _identify(source)
         with jsonstore.locked(self.path):
             data = self._load()
             proj = self._find_project(data, info.series_id)
@@ -107,6 +148,27 @@ class ProjectStore:
             ch.update(fields)
             proj["updated_at"] = time.time()
             self._save(data)
+            if "output_dir" in fields:
+                self._write_sidecar(proj, ch)
+
+    def _write_sidecar(self, proj: dict, ch: dict) -> None:
+        """Stamp the chapter's output folder with its series/chapter identity, so
+        a later folder-based re-import groups it under this same project."""
+        out = ch.get("output_dir")
+        if not out or not os.path.isdir(out):
+            return
+        path = os.path.join(out, _SIDECAR)
+        if os.path.exists(path):
+            return
+        try:
+            jsonstore.atomic_write(path, {
+                "series_id": proj["id"], "series_name": proj["name"],
+                "series_url": proj.get("series_url"),
+                "chapter_id": ch["id"], "chapter_name": ch.get("name"),
+                "chapter_number": ch.get("number"),
+            })
+        except Exception:
+            pass
 
     def enqueue(self, proj_id: str, chap_id: str) -> None:
         with jsonstore.locked(self.path):
@@ -162,7 +224,7 @@ class ProjectStore:
             # Import each recents entry only ONCE. import_recents runs on every
             # launch, so if the chapter is already tracked (possibly marked
             # `done`), leave it alone — never clobber the user's status/fields.
-            info = series.detect(out_dir)
+            info = _identify(out_dir)
             if self.get_chapter(info.series_id, info.chapter_id) is not None:
                 continue
             pid, cid = self.add_chapter(out_dir)

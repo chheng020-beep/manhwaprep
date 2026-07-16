@@ -78,3 +78,30 @@ def test_import_recents_does_not_clobber_done_status(tmp_path):
     s.set_chapter(pid, cid, status="done")                     # user finishes it
     s.import_recents([entry])                                   # next launch
     assert s.get_chapter(pid, cid)["status"] == "done"         # preserved, not reverted
+
+
+def test_sidecar_unifies_url_and_folder_identity(tmp_path):
+    """A chapter prepped from a URL, then re-imported from its output folder,
+    must land in the SAME project (not a separate `folder:` one)."""
+    s = _store(tmp_path)
+    pid, cid = s.add_chapter(COMIX)
+    assert pid.startswith("comix:")
+    out_dir = tmp_path / "why-the-villainess" / "9356816-chapter-1"
+    (out_dir / "typeset").mkdir(parents=True)
+    layout = str(out_dir / "typeset" / "layout.json")
+    # reaching ready with an output_dir stamps the identity sidecar there
+    s.set_chapter(pid, cid, status="ready", output_dir=str(out_dir), layout=layout)
+    # re-import the same chapter from its folder (as import_recents does)
+    s.import_recents([{"layout": layout, "chapter": "ch1", "thumb": ""}])
+    assert len(s.list_projects()) == 1                       # not split in two
+    assert len(s.get_project(pid)["chapters"]) == 1          # not duplicated
+
+
+def test_folder_without_sidecar_falls_back_to_folder_id(tmp_path):
+    """No sidecar -> the plain folder heuristic still applies."""
+    s = _store(tmp_path)
+    folder = tmp_path / "Some Series" / "ch9"
+    (folder / "typeset").mkdir(parents=True)
+    layout = str(folder / "typeset" / "layout.json")
+    s.import_recents([{"layout": layout, "chapter": "ch9", "thumb": ""}])
+    assert any(p["id"].startswith("folder:") for p in s.list_projects())
