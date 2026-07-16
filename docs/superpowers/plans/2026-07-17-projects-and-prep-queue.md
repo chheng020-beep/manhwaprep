@@ -54,7 +54,7 @@ def test_corrupt_returns_default(tmp_path):
     assert jsonstore.read_json(p, []) == []
 
 
-def test_locked_is_reentrant_across_calls(tmp_path):
+def test_locked_serializes_access(tmp_path):
     p = os.path.join(tmp_path, "reg.json")
     with jsonstore.locked(p):
         jsonstore.atomic_write(p, {"n": 1})
@@ -436,9 +436,6 @@ def registry_path() -> str:
     base = os.path.dirname(config.default_output_dir())  # ~/Desktop/ManhwaPrep
     os.makedirs(base, exist_ok=True)
     return os.path.join(base, "projects.json")
-
-
-_EMPTY = {"projects": [], "queue": []}
 
 
 class ProjectStore:
