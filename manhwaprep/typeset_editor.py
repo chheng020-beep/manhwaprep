@@ -195,9 +195,10 @@ _KHMER_FONT = None
 
 def khmer_font() -> str:
     """Resolve the default Khmer font, registering the bundled fonts first.
-    Prefers 'Kh Ang MuraFastHand' (if the user has installed it, or it's bundled),
-    then the bundled open handwriting font 'Fasthand' as a close fallback, then
-    other Khmer fonts. Memoised; must be called after a QApplication exists."""
+    Prefers a clean, modern, easy-to-read Khmer sans — 'Kantumruy Pro' — then
+    'Content' / 'Battambang' / 'Hanuman', then system Khmer fonts. A "Set as
+    default font" choice (default_font.txt) overrides this. Memoised; must be
+    called after a QApplication exists."""
     global _KHMER_FONT
     if _KHMER_FONT is not None:
         return _KHMER_FONT
@@ -226,16 +227,10 @@ def khmer_font() -> str:
                 registered += QFontDatabase.applicationFontFamilies(fid)
     fams = list(QFontDatabase.families())
     low = {f.lower(): f for f in fams}
-    # 1) the requested Kh Ang MuraFastHand, however it's spelled, if available
-    for f in fams:
-        fl = f.lower()
-        if "mura" in fl and "fast" in fl:
-            _KHMER_FONT = f
-            return f
-    # 2) preference chain — bundled open 'Fasthand' is the close handwriting match
-    for cand in ("Kh Ang MuraFastHand", "Fasthand", "Hanuman", *registered,
-                 "Khmer Sangam MN", "Khmer OS", "Leelawadee UI", "Khmer UI",
-                 "Noto Sans Khmer"):
+    # Prefer a clean, modern, readable Khmer sans over handwriting styles.
+    for cand in ("Kantumruy Pro", "Content", "Battambang", "Hanuman",
+                 "Noto Sans Khmer", "Khmer Sangam MN", "Khmer OS", *registered,
+                 "Leelawadee UI", "Khmer UI"):
         if cand.lower() in low:
             _KHMER_FONT = low[cand.lower()]
             return _KHMER_FONT
