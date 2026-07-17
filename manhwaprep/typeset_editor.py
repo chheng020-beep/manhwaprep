@@ -195,8 +195,8 @@ _KHMER_FONT = None
 
 def khmer_font() -> str:
     """Resolve the default Khmer font, registering the bundled fonts first.
-    Prefers a clean, modern, easy-to-read Khmer sans — 'Kantumruy Pro' — then
-    'Content' / 'Battambang' / 'Hanuman', then system Khmer fonts. A "Set as
+    Prefers 'Battambang' — a rounded, friendly, easy-to-read Khmer sans — then
+    'Kantumruy Pro' / 'Content' / 'Hanuman', then system Khmer fonts. A "Set as
     default font" choice (default_font.txt) overrides this. Memoised; must be
     called after a QApplication exists."""
     global _KHMER_FONT
@@ -227,8 +227,8 @@ def khmer_font() -> str:
                 registered += QFontDatabase.applicationFontFamilies(fid)
     fams = list(QFontDatabase.families())
     low = {f.lower(): f for f in fams}
-    # Prefer a clean, modern, readable Khmer sans over handwriting styles.
-    for cand in ("Kantumruy Pro", "Content", "Battambang", "Hanuman",
+    # Prefer a rounded, friendly, readable Khmer sans over handwriting styles.
+    for cand in ("Battambang", "Kantumruy Pro", "Content", "Hanuman",
                  "Noto Sans Khmer", "Khmer Sangam MN", "Khmer OS", *registered,
                  "Leelawadee UI", "Khmer UI"):
         if cand.lower() in low:
