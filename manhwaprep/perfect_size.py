@@ -243,9 +243,9 @@ def fit_lines(lines, box_w, box_h, font_family, margin=0.06,
 # Preferred fixed font sizes, largest first. apply_perfect_size targets these:
 # fix the size, wrap to the box WIDTH, and let the box grow in height — so the
 # text comes out big and readable instead of shrinking to a short box.
-# (cap, floor): perfect-size targets a single 35 pt — 40 read too big. Text that
-# doesn't fit at 35 grows the box taller rather than going bigger.
-PREFER_SIZES = (35.0, 35.0)
+# (cap, floor): perfect-size targets a single 40 pt (matches the default box
+# size). Text that doesn't fit at 40 grows the box taller rather than shrinking.
+PREFER_SIZES = (40.0, 40.0)
 
 
 def wrap_at_size(text, box_w, size, font_family, margin=0.06,
