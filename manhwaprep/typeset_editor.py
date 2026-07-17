@@ -270,7 +270,7 @@ class TextBoxItem(QGraphicsItem):
         # Canva model: the FONT is fixed (this size) and the box HEIGHT auto-grows
         # to fit the wrapped text. A corner drag or the Size box changes the font;
         # narrowing the width just wraps the text and makes the box taller.
-        self.max_size = 30.0
+        self.max_size = 40.0
         self.fill = QColor(0, 0, 0)
         self.outline = QColor(255, 255, 255)
         self.outline_w = 3
@@ -431,6 +431,23 @@ class TextBoxItem(QGraphicsItem):
             self.setY(bottom - self.h)
         else:
             self.setY(cy - self.h / 2)  # keep the vertical centre
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
+
+    def _grow_fitted_height(self) -> None:
+        """Regrow a perfect-sized box to fit its lines at the CURRENT font size.
+        _refit() early-returns for fitted boxes (they hold a target height picked
+        at the fit size), so raising the font via the Size box would leave the box
+        too short and clip the taller text at the bottom. Keeps the vertical
+        centre. No-op for non-fitted boxes (those auto-height in _refit)."""
+        if not self.fitted:
+            return
+        lines = (self.text or " ").split("\n") or [" "]
+        fm = QFontMetricsF(self.font)
+        need_h = len(lines) * fm.lineSpacing() * self.line_spacing + 6
+        cy = self.y() + self.h / 2
+        self.prepareGeometryChange()
+        self.h = max(8.0, need_h)
+        self.setY(cy - self.h / 2)
         self.setTransformOriginPoint(self.w / 2, self.h / 2)
 
     def boundingRect(self) -> QRectF:
@@ -2498,6 +2515,7 @@ class TypesetEditor(QWidget):
         for it in self._selected():
             it.max_size = float(v)
             it._refit()
+            it._grow_fitted_height()   # fitted boxes: regrow so text isn't clipped
             it.update()
         self._record_if_changed()
 

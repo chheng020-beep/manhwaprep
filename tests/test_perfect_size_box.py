@@ -164,3 +164,26 @@ def test_fitted_box_renders_one_visual_line_per_fitted_line():
 
     layout, _ = it._text_layout()
     assert layout.lineCount() == expected_lines
+
+
+def test_new_textbox_default_size_is_40():
+    it = TextBoxItem(1, "x", 0, 0, 100, 40)
+    assert it.max_size == 40.0
+
+
+def test_fitted_box_grows_height_when_font_enlarged():
+    """Regression: raising the font on a perfect-sized box must grow the box so
+    the taller text isn't clipped at the bottom (the Size-box path)."""
+    from PySide6.QtGui import QFontMetricsF
+    it = TextBoxItem(1, "លោកអ្នកទាំងអស់គ្នាសូមអរគុណនិងសូមជូនពរ", 0, 0, 300, 200)
+    it.raw_text = it.text
+    it.apply_perfect_size()               # fitted (~35pt)
+    h_small = it.h
+    # editor's Size-box path: set max_size, refit, regrow
+    it.max_size = 70.0
+    it._refit()
+    it._grow_fitted_height()
+    lines = it.text.split("\n")
+    need = len(lines) * QFontMetricsF(it.font).lineSpacing() * it.line_spacing
+    assert it.h >= need                   # tall enough -> no bottom clip
+    assert it.h > h_small                 # grew with the bigger font
